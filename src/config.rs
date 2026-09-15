@@ -182,9 +182,15 @@ impl TryFrom<String> for Secret {
 }
 
 impl Secret {
+    /// The variable name in `env:NAME`. It names the secret, it is not the
+    /// secret.
+    pub fn env_name(&self) -> &str {
+        &self.0["env:".len()..]
+    }
+
     /// Reads the named environment variable.
     pub fn resolve(&self) -> Result<String, ConfigError> {
-        let name = &self.0["env:".len()..];
+        let name = self.env_name();
         std::env::var(name)
             .map_err(|_| ConfigError::Invalid(format!("environment variable `{name}` is not set")))
     }
@@ -383,6 +389,12 @@ dir = "traces"
         let config = load(&path).unwrap();
         assert_eq!(config.policy.file, dir.path().join("policy.toml"));
         assert_eq!(config.store.dir, PathBuf::from("/abs/traces"));
+    }
+
+    #[test]
+    fn secret_env_name_is_the_variable_name() {
+        let secret = Secret::try_from("env:WALLET_API_KEY".to_string()).unwrap();
+        assert_eq!(secret.env_name(), "WALLET_API_KEY");
     }
 
     #[test]

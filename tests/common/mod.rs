@@ -172,3 +172,78 @@ impl ServerHandler for MockServer {
         Ok(result.into())
     }
 }
+
+/// Starts a downstream over streamable HTTP whose tools each return a fixed
+/// structured response, for shapes the standard mock does not produce.
+#[allow(dead_code)] // Each test binary uses a subset of these fixtures.
+pub async fn start_fixed_downstream(tools: Vec<(Tool, Value)>) -> MockDownstream {
+    let config = StreamableHttpServerConfig::default();
+    let server = FixedServer {
+        tools: std::sync::Arc::new(tools),
+    };
+    let service: StreamableHttpService<FixedServer, LocalSessionManager> =
+        StreamableHttpService::new(
+            move || Ok(server.clone()),
+            Default::default(),
+            config.clone(),
+        );
+    let router = axum::Router::new().nest_service("/mcp", service);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let token = config.cancellation_token.clone();
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router)
+            .with_graceful_shutdown(async move { token.cancelled_owned().await })
+            .await;
+    });
+    MockDownstream {
+        url: format!("http://{addr}/mcp"),
+        config,
+        server,
+    }
+}
+
+/// An object schema with no required properties, for fixed-response tools.
+#[allow(dead_code)] // Each test binary uses a subset of these fixtures.
+pub fn open_object_schema() -> rmcp::model::JsonObject {
+    json!({ "type": "object" }).as_object().unwrap().clone()
+}
+
+#[derive(Clone)]
+struct FixedServer {
+    tools: std::sync::Arc<Vec<(Tool, Value)>>,
+}
+
+impl ServerHandler for FixedServer {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        Ok(ListToolsResult::with_all_items(
+            self.tools.iter().map(|(tool, _)| tool.clone()).collect(),
+        ))
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        match self
+            .tools
+            .iter()
+            .find(|(tool, _)| tool.name == request.name)
+        {
+            Some((_, response)) => Ok(CallToolResult::structured(response.clone()).into()),
+            None => Err(ErrorData::invalid_params(
+                format!("unknown tool `{}`", request.name),
+                None,
+            )),
+        }
+    }
+}
