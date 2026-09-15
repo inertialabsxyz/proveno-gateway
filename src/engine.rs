@@ -33,6 +33,20 @@ pub struct ExecuteResponse {
     pub status: RunStatus,
 }
 
+/// Why `execute` returned no response. A run that starts and fails is not an
+/// error here: it is an `ExecuteResponse` with an error status.
+#[derive(Debug, thiserror::Error)]
+pub enum ExecuteError {
+    /// The program did not lint; nothing ran and nothing was stored. The model
+    /// can fix this and resubmit.
+    #[error(transparent)]
+    Lint(#[from] LintError),
+    /// The store could not be written. If this happens after the run, the
+    /// program's tool calls have already been made but no trace exists.
+    #[error("trace store: {0}")]
+    Store(#[from] StoreError),
+}
+
 pub struct Engine {
     vm: VmSettings,
     policy: Arc<Policy>,
@@ -91,12 +105,12 @@ impl Engine {
 
     /// Runs one program and stores its signed trace. A lint error is returned
     /// before anything is stored; every run that starts produces a trace,
-    /// whether it succeeds or fails.
+    /// whether it succeeds or fails, unless the store cannot be written.
     pub async fn execute(
         &self,
         principal: &str,
         req: ExecuteRequest,
-    ) -> Result<ExecuteResponse, LintError> {
+    ) -> Result<ExecuteResponse, ExecuteError> {
         let allowed = self.allowed_schemas(principal);
         let description = description::build(&allowed);
         let program = compile_program(&description.prelude, &req.program)?;
@@ -112,11 +126,10 @@ impl Engine {
         // source compiles to the same `program_hash`, so it is kept.
         match self.store.put_program(&program_hash, &source) {
             Ok(()) | Err(StoreError::Conflict { .. }) => {}
-            Err(e) => panic!("trace store: write program: {e:?}"),
+            Err(e) => return Err(e.into()),
         }
         self.store
-            .put_description(&description_hash, &description.text)
-            .expect("trace store: write description");
+            .put_description(&description_hash, &description.text)?;
 
         let trace_id = uuid::Uuid::now_v7().to_string();
         let host = GatewayHost::new(
@@ -200,9 +213,7 @@ impl Engine {
             },
         };
         trace.sign(&self.signing_key);
-        self.store
-            .put_trace(&trace)
-            .expect("trace store: write trace");
+        self.store.put_trace(&trace)?;
 
         Ok(ExecuteResponse {
             result: trace

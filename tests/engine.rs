@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 use proveno::compiler::program_hash::compute_program_hash_sha256;
 use proveno_gateway::config::{self, GatewayConfig};
 use proveno_gateway::dialect::compile_program;
-use proveno_gateway::engine::{Engine, ExecuteRequest};
+use proveno_gateway::engine::{Engine, ExecuteError, ExecuteRequest};
 use proveno_gateway::store::TraceStore;
 use proveno_gateway::trace::{CallDecision, RunStatus, Trace, signing_key_from_hex};
 use serde_json::json;
@@ -291,10 +291,9 @@ async fn lint_failure_reports_the_agent_line_and_stores_nothing() {
     let engine = Engine::new(config.clone()).await.unwrap();
 
     let program = "local a = 1\nlocal b = 2\nlocal c = 3\nlocal t = os.time()\nreturn t\n";
-    let err = engine
-        .execute("demo-agent", request(program))
-        .await
-        .unwrap_err();
+    let Err(ExecuteError::Lint(err)) = engine.execute("demo-agent", request(program)).await else {
+        panic!("expected a lint error");
+    };
     assert_eq!(err.line, 4);
     assert!(err.message.contains("`os` is not available"), "{err}");
     assert_eq!(engine.check("demo-agent", program), Err(err));
@@ -517,6 +516,30 @@ async fn sources_with_the_same_bytecode_both_run() {
     assert_eq!(
         stored_trace(&config, &first.trace_id).header.program_hash,
         stored_trace(&config, &second.trace_id).header.program_hash
+    );
+    mock.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn unwritable_store_is_an_error_not_a_panic() {
+    let mock = common::start_mock_downstream().await;
+    let (config, _dir) = gateway_config(&mock.url(), "");
+    let engine = Engine::new(config.clone()).await.unwrap();
+
+    // A file where the traces directory should be: the run happens, but its
+    // trace cannot be written.
+    let traces = config.store.dir.join("traces");
+    std::fs::remove_dir(&traces).unwrap();
+    std::fs::write(&traces, "not a directory").unwrap();
+
+    let result = engine.execute("demo-agent", request("return 1")).await;
+    let Err(ExecuteError::Store(e)) = result else {
+        panic!("expected a store error, got {result:?}");
+    };
+    assert!(
+        ExecuteError::Store(e)
+            .to_string()
+            .starts_with("trace store: ")
     );
     mock.shutdown().await;
 }
