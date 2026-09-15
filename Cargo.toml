@@ -1,0 +1,10 @@
+[package]
+name = "proveno-gateway"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# `poseidon` is left off: the gateway commits to the SHA-256 program hash,
+# which covers the constant pool and matches the OpenVM proof path. Poseidon
+# would also pull in the acir/wasmer tree for no use.
+proveno = { git = "https://github.com/inertialabsxyz/proveno-core.git", tag = "v0.2.0", default-features = false, features = ["std"] }

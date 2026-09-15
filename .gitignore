@@ -1,0 +1,5 @@
+/target
+**/target
+proof-output/
+.env
+.DS_Store
