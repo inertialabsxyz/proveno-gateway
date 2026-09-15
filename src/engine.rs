@@ -16,7 +16,7 @@ use crate::dialect::{LintError, compile_program};
 use crate::downstream::{Downstreams, ToolSchema};
 use crate::host::GatewayHost;
 use crate::policy::Policy;
-use crate::store::TraceStore;
+use crate::store::{StoreError, TraceStore};
 use crate::trace::{RunStatus, Trace, TraceEntry, TraceFooter, TraceHeader, signing_key_from_hex};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -107,9 +107,13 @@ impl Engine {
         // the source `compile_program` compiled, and it recompiles to
         // `program_hash` on its own.
         let source = format!("{}{}", description.prelude, req.program);
-        self.store
-            .put_program(&program_hash, &source)
-            .expect("trace store: write program");
+        // The hash covers bytecode, not comments or line numbers, so a source
+        // that differs only in those collides with one already stored. That
+        // source compiles to the same `program_hash`, so it is kept.
+        match self.store.put_program(&program_hash, &source) {
+            Ok(()) | Err(StoreError::Conflict { .. }) => {}
+            Err(e) => panic!("trace store: write program: {e:?}"),
+        }
         self.store
             .put_description(&description_hash, &description.text)
             .expect("trace store: write description");

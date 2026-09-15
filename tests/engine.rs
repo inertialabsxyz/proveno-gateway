@@ -498,3 +498,25 @@ async fn allowed_tool_lua_cannot_declare_fails_at_startup() {
     );
     mock.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn sources_with_the_same_bytecode_both_run() {
+    let mock = common::start_mock_downstream().await;
+    let (config, _dir) = gateway_config(&mock.url(), "");
+    let engine = Engine::new(config.clone()).await.unwrap();
+
+    let first = engine
+        .execute("demo-agent", request("return 1"))
+        .await
+        .unwrap();
+    let second = engine
+        .execute("demo-agent", request("-- the same program\nreturn 1"))
+        .await
+        .unwrap();
+    assert_eq!(second.status, RunStatus::Ok);
+    assert_eq!(
+        stored_trace(&config, &first.trace_id).header.program_hash,
+        stored_trace(&config, &second.trace_id).header.program_hash
+    );
+    mock.shutdown().await;
+}
