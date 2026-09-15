@@ -3,3 +3,5 @@
 //! run bit-for-bit.
 //!
 //! The spec is `planning/proveno-gateway-spec.md` in the proveno umbrella.
+
+pub mod config;
