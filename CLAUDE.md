@@ -50,7 +50,7 @@ Must pass before every commit.
 - **No floats in the VM.** Non-integer numbers from downstream servers are
   mapped at the host boundary, never passed through.
 
-## Commits
+## Rules
 
-Scopes: `mcp`, `host`, `policy`, `trace`, `replay`, `config`, `tests`, `docs`,
-`repo`.
+`.claude/rules/` holds the working conventions: `commits.md`,
+`pull-requests.md`, `review-gate.md` and `testing.md`.
