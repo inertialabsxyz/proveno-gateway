@@ -15,7 +15,7 @@ pub struct LintError {
     pub message: String,
 }
 
-/// The dialect rules, as proveno-core v0.2.0 enforces them. Changing this text
+/// The dialect rules, as proveno-core v0.3.0 enforces them. Changing this text
 /// changes every description hash, so bump `DIALECT_VERSION` with it.
 const DIALECT_RULES: &str = "\
 # Lua dialect (version 1)

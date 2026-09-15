@@ -8,7 +8,7 @@ edition = "2024"
 # which covers the constant pool and matches the OpenVM proof path. Poseidon
 # would also pull in the acir/wasmer tree for no use. `serde` derives
 # serialization for `ToolCallRecord` and `OracleTape`, which the trace embeds.
-proveno = { git = "https://github.com/inertialabsxyz/proveno-core.git", tag = "v0.2.0", default-features = false, features = ["std", "serde"] }
+proveno = { git = "https://github.com/inertialabsxyz/proveno-core.git", tag = "v0.3.0", default-features = false, features = ["std", "serde"] }
 tokio = { version = "1", features = ["full"] }
 rmcp = { version = "3", features = [
     "client",

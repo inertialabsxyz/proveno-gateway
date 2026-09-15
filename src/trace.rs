@@ -280,15 +280,15 @@ mod tests {
         r#""max_tool_calls":64,"max_tool_bytes_in":4096,"max_tool_bytes_out":4096,"#,
         r#""max_output_bytes":4096},"request":null},"#,
         r#""entries":[{"record":{"seq":0,"tool_name":"market.get_price","#,
-        r#""args_canonical":[123,34,97,34,58,34,69,34,125],"args_bytes":9,"#,
+        r#""args_canonical":"{\"a\":\"E\"}","args_bytes":9,"#,
         r#""response_hash":"3333333333333333333333333333333333333333333333333333333333333333","#,
-        r#""response_bytes":7,"response_canonical":[123,34,112,34,58,55,125],"#,
-        r#""error_message":"","attestation":[1,2],"gas_charged":10,"status":"Ok"},"#,
+        r#""response_bytes":7,"response_canonical":"{\"p\":7}","#,
+        r#""error_message":"","attestation":"0102","gas_charged":10,"status":"Ok"},"#,
         r#""decision":{"type":"allowed"},"provenance":{"type":"unsigned"}},"#,
         r#"{"record":{"seq":1,"tool_name":"wallet.transfer","#,
-        r#""args_canonical":[123,34,110,34,58,54,48,125],"args_bytes":8,"#,
-        r#""response_hash":"","response_bytes":0,"response_canonical":[],"#,
-        r#""error_message":"amount exceeds 50","attestation":[],"gas_charged":0,"status":"Error"},"#,
+        r#""args_canonical":"{\"n\":60}","args_bytes":8,"#,
+        r#""response_hash":"","response_bytes":0,"response_canonical":"","#,
+        r#""error_message":"amount exceeds 50","attestation":"","gas_charged":0,"status":"Error"},"#,
         r#""decision":{"type":"denied_by_policy","reason":"amount exceeds 50"},"#,
         r#""provenance":{"type":"unsigned"}}],"#,
         r#""footer":{"output":null,"#,
@@ -298,8 +298,8 @@ mod tests {
 
     /// Ed25519 is deterministic, so a fixed key and trace give a fixed signature.
     const PINNED_SIGNATURE: &str = concat!(
-        "f73434a28795dcc0b9f745c44c74664576c898971186b2ff2a550e6d691f515b",
-        "b016ce52f82e3e9e334742029a8ac320c62a60bcfbeb82bc0b8f3188517f3f06",
+        "8eaa7eddb8f83396a43190277e6918b0f933069ce7fd6c8cd1a41660eb7891c5",
+        "969eab78bcf6ab7fdc1f5f004da990d85cf8c89a7bce4c535fea80e4c59a5805",
     );
 
     fn key(byte: u8) -> SigningKey {
