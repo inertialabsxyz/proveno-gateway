@@ -380,3 +380,49 @@ async fn empty_or_shared_tokens_fail_at_startup() {
 
     mock.shutdown().await;
 }
+
+/// Runs the built binary's `check` subcommand on `program`, returning stdout
+/// and the exit code.
+async fn check_binary(
+    config: &std::path::Path,
+    dir: &std::path::Path,
+    program: &str,
+) -> (String, Option<i32>) {
+    let file = dir.join("program.lua");
+    std::fs::write(&file, program).unwrap();
+    let out = tokio::process::Command::new(env!("CARGO_BIN_EXE_proveno-gateway"))
+        .arg("check")
+        .arg("--config")
+        .arg(config)
+        .args(["--principal", "demo-agent"])
+        .arg(&file)
+        .output()
+        .await
+        .unwrap();
+    (
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        out.status.code(),
+    )
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn check_cli_prints_the_lint_error_or_ok() {
+    let mock = common::start_mock_downstream().await;
+    let (_config, dir) = gateway_config(&mock.url(), PRINCIPALS);
+    let config = dir.path().join("gateway.toml");
+
+    let (stdout, code) = check_binary(&config, dir.path(), "return os.time()").await;
+    assert!(stdout.starts_with("line 1:"), "{stdout}");
+    assert_eq!(code, Some(1));
+
+    let (stdout, code) = check_binary(
+        &config,
+        dir.path(),
+        "return wallet.transfer{ to = \"0x1\", amount = 1 }",
+    )
+    .await;
+    assert_eq!(stdout, "ok\n");
+    assert_eq!(code, Some(0));
+
+    mock.shutdown().await;
+}
