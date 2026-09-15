@@ -3,6 +3,8 @@
 
 mod common;
 
+use std::path::Path;
+use std::process::Command;
 use std::sync::LazyLock;
 
 use proveno::compiler::program_hash::compute_program_hash_sha256;
@@ -340,5 +342,78 @@ async fn tampered_trace_fails_signature_verification() {
     assert!(
         message.contains("signature verification failed"),
         "{message}"
+    );
+}
+
+/// Runs `proveno-gateway replay` as a fresh process, with the signing key in
+/// its environment and nothing else from this test.
+fn replay_process(config: &GatewayConfig, dir: &Path, trace_id: &str) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_proveno-gateway"))
+        .args(["replay", "--config"])
+        .arg(dir.join("gateway.toml"))
+        .arg(trace_id)
+        .env_clear()
+        .env(
+            SIGNING_KEY_VAR,
+            config.server.signing_key.resolve().unwrap(),
+        )
+        .output()
+        .unwrap()
+}
+
+/// The value of a `name: value` line in the replay command's output.
+fn field<'a>(stdout: &'a str, name: &str) -> &'a str {
+    stdout
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{name}: ")))
+        .unwrap_or_else(|| panic!("no `{name}` in {stdout}"))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replay_is_identical_in_process_and_in_a_fresh_process() {
+    let (config, dir, ids) = record("", &[SUCCESS]).await;
+    let first = replay(&config, &ids[0]).unwrap();
+    let second = replay(&config, &ids[0]).unwrap();
+    assert!(first.matched, "{:?}", first.mismatches);
+    assert_eq!(first, second);
+
+    let out = replay_process(&config, dir.path(), &ids[0]);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        stdout.lines().next(),
+        Some(format!("replay matched: {}", ids[0]).as_str())
+    );
+    let output = first.output.as_deref().unwrap();
+    assert_eq!(field(&stdout, "output").as_bytes(), output.as_bytes());
+    assert_eq!(field(&stdout, "status"), "ok");
+    assert_eq!(field(&stdout, "gas_used"), first.gas_used.to_string());
+    assert_eq!(field(&stdout, "memory_used"), first.memory_used.to_string());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn replay_command_prints_mismatches_and_exits_1() {
+    let (config, dir, ids) = record("", &[SUCCESS]).await;
+    let mut trace = store(&config).get_trace(&ids[0]).unwrap();
+    trace.footer.gas_used += 1;
+    trace.sign(&signing_key_from_hex(SIGNING_KEY_HEX).unwrap());
+    overwrite_trace(&config, &trace);
+
+    let out = replay_process(&config, dir.path(), &ids[0]);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(1), "{stdout}");
+    assert_eq!(
+        stdout,
+        format!(
+            "replay mismatched: {}\n  gas_used: recorded {}, replayed {}\n",
+            ids[0],
+            trace.footer.gas_used,
+            trace.footer.gas_used - 1
+        )
     );
 }
