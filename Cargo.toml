@@ -6,5 +6,29 @@ edition = "2024"
 [dependencies]
 # `poseidon` is left off: the gateway commits to the SHA-256 program hash,
 # which covers the constant pool and matches the OpenVM proof path. Poseidon
-# would also pull in the acir/wasmer tree for no use.
-proveno = { git = "https://github.com/inertialabsxyz/proveno-core.git", tag = "v0.2.0", default-features = false, features = ["std"] }
+# would also pull in the acir/wasmer tree for no use. `serde` derives
+# serialization for `ToolCallRecord` and `OracleTape`, which the trace embeds.
+proveno = { git = "https://github.com/inertialabsxyz/proveno-core.git", tag = "v0.2.0", default-features = false, features = ["std", "serde"] }
+tokio = { version = "1", features = ["full"] }
+rmcp = { version = "3", features = [
+    "client",
+    "server",
+    "transport-child-process",
+    "transport-streamable-http-client-reqwest",
+    "transport-streamable-http-server",
+] }
+axum = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+sha2 = "0.10"
+hex = "0.4"
+ed25519-dalek = "3"
+jsonschema = "0.56"
+clap = { version = "4", features = ["derive"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+thiserror = "2"
+anyhow = "1"
+
+[dev-dependencies]
+tempfile = "3"
