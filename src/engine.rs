@@ -63,13 +63,22 @@ impl Engine {
                 .resolve()
                 .with_context(|| format!("principal `{name}` token"))?;
         }
-        Ok(Engine {
+        let engine = Engine {
             vm: config.vm,
             policy: Arc::new(policy),
             downstreams: Arc::new(downstreams),
             store,
             signing_key,
-        })
+        };
+        // The prelude declares every allowed tool as Lua, so a name Lua cannot
+        // declare would otherwise surface as a compile panic on first use.
+        for principal in config.principals.keys() {
+            for tool in engine.allowed_schemas(principal) {
+                check_lua_names(&tool)
+                    .map_err(|e| anyhow::anyhow!("principal `{principal}`: {e}"))?;
+            }
+        }
+        Ok(engine)
     }
 
     pub fn description_for(&self, principal: &str) -> ToolDescription {
@@ -213,6 +222,78 @@ impl Engine {
     }
 }
 
+const LUA_KEYWORDS: &[&str] = &[
+    "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if", "in",
+    "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
+];
+
+/// Names the dialect already gives a meaning to: core's globals and call-position
+/// builtins, and the identifiers its parser rejects. A server named after one
+/// would fail to compile or shadow it for the agent's program.
+const DIALECT_NAMES: &[&str] = &[
+    "tool",
+    "string",
+    "math",
+    "table",
+    "json",
+    "tostring",
+    "tonumber",
+    "type",
+    "select",
+    "unpack",
+    "pairs_sorted",
+    "pairs",
+    "ipairs",
+    "pcall",
+    "error",
+    "log",
+    "print",
+    "debug",
+    "io",
+    "os",
+    "package",
+    "require",
+    "load",
+    "dofile",
+    "loadfile",
+    "loadstring",
+    "collectgarbage",
+    "setmetatable",
+    "getmetatable",
+    "rawget",
+    "rawset",
+    "setfenv",
+    "getfenv",
+    "coroutine",
+];
+
+/// The prelude declares `local <server> = {}` and `<server>.<tool> = ...`, so
+/// the server must be a free Lua name and the tool a valid field name.
+fn check_lua_names(tool: &ToolSchema) -> Result<(), String> {
+    let is_name = |s: &str| {
+        let mut chars = s.chars();
+        chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !LUA_KEYWORDS.contains(&s)
+    };
+    let qualified = tool.qualified_name();
+    if !is_name(&tool.server) || DIALECT_NAMES.contains(&tool.server.as_str()) {
+        return Err(format!(
+            "tool {qualified}: downstream name `{}` is not usable as a Lua name",
+            tool.server
+        ));
+    }
+    if !is_name(&tool.name) {
+        return Err(format!(
+            "tool {qualified}: tool name `{}` is not usable as a Lua field name",
+            tool.name
+        ));
+    }
+    Ok(())
+}
+
 /// Canonical JSON of the return value, which is what the trace commits to.
 /// Core does not enforce `max_output_bytes`, so the gateway does, here.
 fn output_json(value: &LuaValue, max_output_bytes: usize) -> Result<String, VmError> {
@@ -293,6 +374,59 @@ mod tests {
         assert_eq!(error(e), ("RuntimeError".into(), "boom".into()));
         let e = VmError::RuntimeError(LuaValue::Integer(7));
         assert_eq!(error(e), ("RuntimeError".into(), "7".into()));
+    }
+
+    fn tool(server: &str, name: &str) -> ToolSchema {
+        ToolSchema {
+            server: server.into(),
+            name: name.into(),
+            description: String::new(),
+            input_schema: serde_json::json!({ "type": "object" }),
+            output_schema: None,
+        }
+    }
+
+    #[test]
+    fn lua_names_are_accepted() {
+        for (server, name) in [
+            ("wallet", "get_balance"),
+            ("_x2", "type"),
+            ("market", "Get2"),
+        ] {
+            assert_eq!(
+                check_lua_names(&tool(server, name)),
+                Ok(()),
+                "{server}.{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn names_lua_cannot_declare_are_rejected() {
+        for (server, name) in [
+            ("wallet", "get-price"),
+            ("wallet", "end"),
+            ("wallet", "2fa"),
+            ("my-wallet", "get"),
+            ("local", "get"),
+            ("tool", "get"),
+            ("string", "get"),
+            ("os", "get"),
+        ] {
+            assert!(
+                check_lua_names(&tool(server, name)).is_err(),
+                "{server}.{name}"
+            );
+        }
+    }
+
+    /// Accepted names, including a tool named after a builtin, compile as a
+    /// prelude alongside a program that uses that builtin.
+    #[test]
+    fn accepted_names_compile_in_a_prelude() {
+        let allowed = [tool("_x2", "type"), tool("wallet", "get_balance")];
+        let prelude = description::build(&allowed).prelude;
+        compile_program(&prelude, "return type(1)").unwrap();
     }
 
     #[test]

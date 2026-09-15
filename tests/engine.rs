@@ -476,3 +476,25 @@ async fn missing_secret_fails_at_startup() {
     );
     mock.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn allowed_tool_lua_cannot_declare_fails_at_startup() {
+    let mock = common::start_mock_downstream().await;
+    let (mut config, _dir) = gateway_config(&mock.url(), "");
+    // `string` is a valid config name, but as a prelude local it would shadow
+    // the string library.
+    config.downstream[1].name = "string".into();
+    std::fs::write(
+        &config.policy.file,
+        "[principals.demo-agent]\nallow = [\"string.get_price\"]\n",
+    )
+    .unwrap();
+
+    let err = Engine::new(config).await.err().unwrap().to_string();
+    assert!(err.contains("principal `demo-agent`"), "{err}");
+    assert!(
+        err.contains("`string` is not usable as a Lua name"),
+        "{err}"
+    );
+    mock.shutdown().await;
+}
