@@ -14,7 +14,7 @@ use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use serde::{Deserialize, Serialize};
 
-use crate::config::{DownstreamConfig, Secret, Transport};
+use crate::config::{DownstreamConfig, Transport};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolSchema {
@@ -107,7 +107,7 @@ async fn open(
     };
     let credential = match &config.credential {
         Some(secret) => Some((
-            secret_env_name(secret),
+            secret.env_name(),
             secret.resolve().map_err(|e| fail("credential", &e))?,
         )),
         None => None,
@@ -144,21 +144,6 @@ async fn open(
                 .map_err(|e| fail("initialize", &e))
         }
     }
-}
-
-/// The variable name in a secret's `env:NAME` form.
-///
-/// `Secret` keeps its reference private and exposes only `resolve`, so the name
-/// is read back from its `Debug` form, `Secret("env:NAME")`. Config validation
-/// guarantees the `env:` prefix.
-fn secret_env_name(secret: &Secret) -> String {
-    let debug = format!("{secret:?}");
-    let quoted = debug
-        .strip_prefix("Secret(")
-        .and_then(|s| s.strip_suffix(')'))
-        .expect("Secret's Debug form is Secret(\"env:NAME\")");
-    let reference: String = serde_json::from_str(quoted).expect("Secret holds a quoted string");
-    reference["env:".len()..].to_string()
 }
 
 fn tool_schema(server: &str, tool: Tool) -> Result<ToolSchema, DownstreamError> {
@@ -251,12 +236,6 @@ mod tests {
         let e = tool_schema("market", tool).unwrap_err().to_string();
         assert!(e.contains("downstream `market`"), "{e}");
         assert!(e.contains("`a.b`"), "{e}");
-    }
-
-    #[test]
-    fn secret_env_name_reads_the_variable_name() {
-        let secret = Secret::try_from("env:WALLET_API_KEY".to_string()).unwrap();
-        assert_eq!(secret_env_name(&secret), "WALLET_API_KEY");
     }
 
     #[test]
