@@ -296,6 +296,11 @@ async fn lint_failure_reports_the_agent_line_and_stores_nothing() {
     };
     assert_eq!(err.line, 4);
     assert!(err.message.contains("`os` is not available"), "{err}");
+    // The model sees the lint error exactly as `check` reports it.
+    assert_eq!(
+        ExecuteError::Lint(err.clone()).to_string(),
+        format!("line 4: {}", err.message)
+    );
     assert_eq!(engine.check("demo-agent", program), Err(err));
     assert!(engine.check("demo-agent", "return 1").is_ok());
 
