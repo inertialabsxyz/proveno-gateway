@@ -12,6 +12,7 @@ proveno = { git = "https://github.com/inertialabsxyz/proveno-core.git", tag = "v
 tokio = { version = "1", features = ["full"] }
 rmcp = { version = "3", features = [
     "client",
+    "reqwest",
     "server",
     "transport-child-process",
     "transport-streamable-http-client-reqwest",
