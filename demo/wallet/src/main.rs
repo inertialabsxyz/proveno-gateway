@@ -8,16 +8,23 @@
 //!
 //! Amounts are integers in milli-ETH so they fit the VM's integer-only value
 //! model.
+//!
+//! Every successful result reports `onchain` provenance in its `_meta` under
+//! `proveno/provenance`: the chain, the block, and a reference (the block hash
+//! for a read, the transaction hash for a transfer). That is this server's own
+//! claim about where the answer came from. The gateway binds it into the trace
+//! as reported; neither this server nor the gateway proves it.
 
+use alloy::eips::{BlockId, BlockNumberOrTag};
 use alloy::network::{EthereumWallet, TransactionBuilder};
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, B256, U256};
 use alloy::providers::{Provider, ProviderBuilder};
 use alloy::rpc::types::TransactionRequest;
 use alloy::signers::local::PrivateKeySigner;
 use clap::Parser;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ListToolsResult,
-    PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
+    MetaObject, PaginatedRequestParams, ServerCapabilities, ServerConfig, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
@@ -118,19 +125,64 @@ fn failed(message: String) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(message)])
 }
 
+/// A structured result carrying `onchain` provenance in its `_meta`, under the
+/// key proveno reserves for it. `chain` is a CAIP-2 identifier, so a consumer
+/// knows which chain to check the reference against.
+fn attested(value: Value, chain_id: u64, block: u64, reference: B256) -> CallToolResult {
+    let mut meta = MetaObject::new();
+    meta.0.insert(
+        "proveno/provenance".to_string(),
+        json!({
+            "type": "onchain",
+            "chain": format!("eip155:{chain_id}"),
+            "block": block,
+            "reference": reference.to_string(),
+        }),
+    );
+    let mut result = CallToolResult::structured(value);
+    result.meta = Some(meta);
+    result
+}
+
 impl Wallet {
     async fn get_balance(&self, request: &CallToolRequestParams) -> CallToolResult {
         let address = match address(request, "address") {
             Ok(address) => address,
             Err(e) => return failed(e),
         };
-        match self.provider.get_balance(address).await {
+        let chain_id = match self.provider.get_chain_id().await {
+            Ok(id) => id,
+            Err(e) => return failed(format!("get_balance: chain id: {e}")),
+        };
+        // Pin the read to one block, so the block and hash reported are the
+        // state the balance was read from.
+        let block = match self
+            .provider
+            .get_block_by_number(BlockNumberOrTag::Latest)
+            .await
+        {
+            Ok(Some(block)) => block,
+            Ok(None) => return failed("get_balance: no latest block".to_string()),
+            Err(e) => return failed(format!("get_balance: latest block: {e}")),
+        };
+        let (number, hash) = (block.header.number, block.header.hash);
+        match self
+            .provider
+            .get_balance(address)
+            .block_id(BlockId::hash(hash))
+            .await
+        {
             Ok(wei) => {
                 let milli = wei / U256::from(MILLI_ETH_WEI);
-                CallToolResult::structured(json!({
-                    "address": address.to_string(),
-                    "eth_milli": milli.saturating_to::<i64>(),
-                }))
+                attested(
+                    json!({
+                        "address": address.to_string(),
+                        "eth_milli": milli.saturating_to::<i64>(),
+                    }),
+                    chain_id,
+                    number,
+                    hash,
+                )
             }
             Err(e) => failed(format!("get_balance: {e}")),
         }
@@ -147,6 +199,10 @@ impl Wallet {
         else {
             return failed("`amount` must be a positive whole number of milli-ETH".to_string());
         };
+        let chain_id = match self.provider.get_chain_id().await {
+            Ok(id) => id,
+            Err(e) => return failed(format!("transfer: chain id: {e}")),
+        };
         let value = U256::from(amount as u128 * MILLI_ETH_WEI);
         let tx = TransactionRequest::default()
             .with_from(self.from)
@@ -159,10 +215,20 @@ impl Wallet {
         // Wait for the receipt so the transaction is on the chain by the time
         // the program sees the hash.
         match pending.get_receipt().await {
-            Ok(receipt) => CallToolResult::structured(json!({
-                "tx_hash": receipt.transaction_hash.to_string(),
-                "amount": amount,
-            })),
+            Ok(receipt) => {
+                let Some(block) = receipt.block_number else {
+                    return failed("transfer: receipt has no block number".to_string());
+                };
+                attested(
+                    json!({
+                        "tx_hash": receipt.transaction_hash.to_string(),
+                        "amount": amount,
+                    }),
+                    chain_id,
+                    block,
+                    receipt.transaction_hash,
+                )
+            }
             Err(e) => failed(format!("transfer: {e}")),
         }
     }
