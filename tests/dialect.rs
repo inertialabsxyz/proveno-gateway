@@ -403,6 +403,8 @@ fn return_inside_a_generic_for_fails_verification() {
     ] {
         for program in [
             format!("for _, v in {iterator} do return false end\nreturn true"),
+            format!("for _, v in {iterator} do if v then return false end end\nreturn true"),
+            format!("for _, v in {iterator} do for i = 1, 2 do return i end end\nreturn true"),
             format!(
                 "local function f()\n  for _, v in {iterator} do return false end\n  \
                  return true\nend\nreturn f()"
@@ -434,6 +436,16 @@ fn return_inside_a_generic_for_fails_verification() {
              end\n\
              return 0"),
         LuaValue::Integer(2)
+    );
+    // A function written in the loop body may return, so the pcall idiom works.
+    assert_eq!(
+        run("local n = 0\n\
+             for _, v in ipairs({ 1, 2 }) do\n\
+               local ok, r = pcall(function() return v end)\n\
+               n = n + r\n\
+             end\n\
+             return n"),
+        LuaValue::Integer(3)
     );
 }
 

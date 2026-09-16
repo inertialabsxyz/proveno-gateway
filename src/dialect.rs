@@ -72,10 +72,12 @@ before the program runs; a violation is returned as a line-numbered error.
 - Two shapes fail before the run with `bytecode verification failed:
   RetStackMismatch` at line 0. This is a known core bug, not a mistake in the
   program, but it must be avoided:
-  - `return` anywhere inside a `for ... in ipairs(...)`, `pairs(...)` or
-    `pairs_sorted(...)` loop, including in a function. Set a local and
-    `break`, then return after the loop, or loop with `for i = 1, #t do`,
-    where `return` works.
+  - `return` in the body of a `for ... in ipairs(...)`, `pairs(...)` or
+    `pairs_sorted(...)` loop, even inside an `if` or an inner loop, and
+    whether or not the loop is in a function. Set a local and `break`, then
+    return after the loop, or loop with `for i = 1, #t do`, where `return`
+    works. A `function() ... end` written in the loop body may `return`, so
+    `pcall(function() return ... end)` inside the loop is fine.
   - A `function t.name(a)` or `function t:name(a)` statement. Write
     `t.name = function(self, a) ... end` instead; `t:name(a)` then works.
 - The standard library is this list and nothing else. Any other name under
