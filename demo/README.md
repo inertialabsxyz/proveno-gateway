@@ -161,6 +161,7 @@ cast rpc anvil_setBalance 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
     "$(cast to-hex 620000000000000000)" --rpc-url http://127.0.0.1:8545
 cast rpc anvil_setBalance 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 \
     "$(cast to-hex 380000000000000000)" --rpc-url http://127.0.0.1:8545
+cast rpc anvil_mine --rpc-url http://127.0.0.1:8545
 
 cargo build --workspace
 ./target/debug/demo-market --listen 127.0.0.1:8081 --fixture prices.json &

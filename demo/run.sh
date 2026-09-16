@@ -121,6 +121,10 @@ start_chain() {
     wait_for_port 8545 || { cat "$LOG_DIR/anvil.log"; fail "anvil did not start"; }
     cast rpc anvil_setBalance "$HOT" "$(cast to-hex "$HOT_WEI")" --rpc-url "$RPC" > /dev/null
     cast rpc anvil_setBalance "$VAULT" "$(cast to-hex "$VAULT_WEI")" --rpc-url "$RPC" > /dev/null
+    # anvil_setBalance changes state without a block, so the latest block's state
+    # root would not commit to these balances. Mine one so that a balance read's
+    # `onchain` tag names a block whose state actually holds them.
+    cast rpc anvil_mine --rpc-url "$RPC" > /dev/null
 }
 
 start_market() {
@@ -199,6 +203,25 @@ cast tx "$tx_hash" --rpc-url "$RPC"
 
 say "The signed trace"
 jq . "$(trace_file "$trace_id")"
+
+say "Each call's policy decision and provenance tag"
+jq -r '
+    def tag:
+        if .type == "onchain" then "onchain(\(.chain), \(.block), \(.reference))"
+        elif .type == "signed" then "signed(\(.by), \(.sig))"
+        elif .type == "notarized" then "notarized(\(.scheme), \(.reference))"
+        else .type end;
+    .entries[] | "\(.record.seq)  \(.record.tool_name)  \(.decision.type)  \(.provenance | tag)"' \
+    "$(trace_file "$trace_id")"
+echo
+echo "A tag is the tool server's own claim of where its answer came from, sealed into the signed trace; the gateway has not checked it."
+
+jq -e '[.entries[] | select(.record.tool_name | startswith("wallet."))]
+    | length > 0 and all(.provenance.type == "onchain")' \
+    "$(trace_file "$trace_id")" > /dev/null || fail "a wallet call is not tagged onchain"
+jq -e '[.entries[] | select(.record.tool_name | startswith("market."))]
+    | length > 0 and all(.provenance.type == "unsigned")' \
+    "$(trace_file "$trace_id")" > /dev/null || fail "a market call is not tagged unsigned"
 
 # ── step 2 ────────────────────────────────────────────────────────────────────
 
