@@ -53,11 +53,11 @@ fn object_schema(properties: Value, required: &[&str]) -> rmcp::model::JsonObjec
         .clone()
 }
 
-fn tools() -> Vec<Tool> {
+fn tools(from: Address) -> Vec<Tool> {
     vec![
         Tool::new(
             "get_balance",
-            "Balance of an address, in whole milli-ETH.",
+            "Balance of an address, in whole milli-ETH, rounded down.",
             object_schema(
                 json!({ "address": { "type": "string", "description": "0x-prefixed address." } }),
                 &["address"],
@@ -75,7 +75,13 @@ fn tools() -> Vec<Tool> {
         ),
         Tool::new(
             "transfer",
-            "Send milli-ETH from the wallet to an address, as a signed transaction.",
+            format!(
+                "Send milli-ETH from {from} to an address, as a signed transaction. \
+                 {from} is the only account this server can send from, set by the \
+                 credential, so funds cannot be moved towards it with this tool. \
+                 It also pays the gas fee, so its balance falls by slightly more \
+                 than `amount` and an exact target balance is not reachable."
+            ),
             object_schema(
                 json!({
                     "to": { "type": "string", "description": "0x-prefixed recipient." },
@@ -172,7 +178,7 @@ impl ServerHandler for Wallet {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, ErrorData> {
-        Ok(ListToolsResult::with_all_items(tools()))
+        Ok(ListToolsResult::with_all_items(tools(self.from)))
     }
 
     async fn call_tool(

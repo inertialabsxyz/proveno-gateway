@@ -134,11 +134,17 @@ fn render_tool(tool: &ToolSchema) -> String {
         None => "table".to_string(),
     };
 
-    let comment = if description.is_empty() {
+    let mut comment = if description.is_empty() {
         format!("-- Returns {returns}.")
     } else {
         format!("-- {description}. Returns {returns}.")
     };
+    if let Some(missing) = fixed_actor_note(&tool.input_schema) {
+        comment.push_str(&format!(
+            " There is no `{missing}` argument: the account this acts as is \
+             fixed by the gateway's credential."
+        ));
+    }
 
     let args: Vec<String> = sorted_properties(&tool.input_schema)
         .iter()
@@ -161,6 +167,30 @@ fn render_tool(tool: &ToolSchema) -> String {
     };
 
     format!("{comment}\n{signature}\n")
+}
+
+/// Destination arguments and the source argument that would pair with each.
+const DIRECTED_PAIRS: [(&str, &str); 4] = [
+    ("to", "from"),
+    ("to_address", "from_address"),
+    ("recipient", "sender"),
+    ("destination", "source"),
+];
+
+/// The source argument a schema names a destination for but does not itself
+/// take, if any. A tool with a `to` and no `from` moves something one way only,
+/// out of whatever account the gateway's credential is for: a model that is not
+/// told this has to guess, and in the 16 September 2026 cold test every attempt
+/// did. Sorted pairs, first match, so the text stays canonical.
+fn fixed_actor_note(input_schema: &Value) -> Option<&'static str> {
+    let names: Vec<&str> = sorted_properties(input_schema)
+        .iter()
+        .map(|(name, _, _)| *name)
+        .collect();
+    DIRECTED_PAIRS
+        .iter()
+        .find(|(to, from)| names.contains(to) && !names.contains(from))
+        .map(|(_, from)| *from)
 }
 
 /// `(name, schema, required)` for each property of an object schema, sorted by
@@ -332,6 +362,57 @@ mod tests {
     }
 
     #[test]
+    fn a_schema_with_a_destination_and_no_source_says_so() {
+        let tool = schema(
+            "wallet",
+            "transfer",
+            json!({
+                "type": "object",
+                "properties": {
+                    "to": { "type": "string" },
+                    "amount": { "type": "integer" }
+                },
+                "required": ["to", "amount"]
+            }),
+            None,
+        );
+        assert!(
+            render_tool(&tool).contains(
+                "There is no `from` argument: the account this acts as is fixed by the \
+                 gateway's credential."
+            ),
+            "{}",
+            render_tool(&tool)
+        );
+    }
+
+    #[test]
+    fn a_schema_with_both_ends_or_neither_says_nothing() {
+        let both = schema(
+            "ledger",
+            "move",
+            json!({
+                "type": "object",
+                "properties": { "to": { "type": "string" }, "from": { "type": "string" } },
+                "required": ["to", "from"]
+            }),
+            None,
+        );
+        let neither = schema(
+            "market",
+            "get_price",
+            json!({
+                "type": "object",
+                "properties": { "pair": { "type": "string" } },
+                "required": ["pair"]
+            }),
+            None,
+        );
+        assert!(!render_tool(&both).contains("There is no"));
+        assert!(!render_tool(&neither).contains("There is no"));
+    }
+
+    #[test]
     fn renders_optional_and_typed_properties() {
         let rendered: Vec<String> = {
             let mut t = tools();
@@ -345,7 +426,8 @@ mod tests {
                  market.get_price{ pair: string } -> table\n",
                 "-- Tool balance. Returns table.\n\
                  wallet.balance{} -> table\n",
-                "-- Tool transfer. Returns table.\n\
+                "-- Tool transfer. Returns table. There is no `from` argument: the account \
+                 this acts as is fixed by the gateway's credential.\n\
                  wallet.transfer{ amount: integer, memo?: string, to: string } -> table\n",
             ]
         );
