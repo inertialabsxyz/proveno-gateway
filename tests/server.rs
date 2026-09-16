@@ -43,13 +43,16 @@ static ENV: LazyLock<()> = LazyLock::new(|| {
     }
 });
 
-/// `demo-agent` may transfer; `reader` may only read.
+/// `demo-agent` may transfer up to 50; `reader` may only read.
 const POLICY: &str = r#"
 [principals.demo-agent]
 allow = ["wallet.get_balance", "market.get_price", "wallet.transfer"]
 
 [principals.reader]
 allow = ["wallet.get_balance", "market.get_price"]
+
+[constraints."wallet.transfer"]
+amount_max = 50
 "#;
 
 const PRINCIPALS: &str = "[principals.demo-agent]\ntoken = \"env:PROVENO_GATEWAY_SERVER_TEST_AGENT_TOKEN\"\n\
@@ -228,7 +231,7 @@ return b.usdc
     let content: Value = serde_json::from_str(&text(&result)).unwrap();
     assert_eq!(content, structured);
 
-    // A run that starts and fails is still a result, with its trace.
+    // A run that starts and fails still returns its status and trace.
     let failed = call(
         &client,
         "execute",
@@ -236,9 +239,82 @@ return b.usdc
     )
     .await
     .unwrap();
+    assert_eq!(failed.is_error, Some(true), "{}", text(&failed));
     let structured = failed.structured_content.clone().unwrap();
     assert_eq!(structured["status"]["type"], "error");
     assert!(structured["trace_id"].is_string());
+
+    client.cancel().await.unwrap();
+    server.shutdown().await;
+    mock.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn uncaught_denial_is_a_tool_error_with_the_status_and_trace() {
+    let mock = common::start_mock_downstream().await;
+    let (config, _dir) = gateway_config(&mock.url(), PRINCIPALS);
+    let server = server::start(config).await.unwrap();
+    let client = connect(&server, AGENT_TOKEN).await;
+
+    let program = r#"
+local b = wallet.get_balance{ address = "0x1" }
+wallet.transfer{ to = "0x1", amount = 60 }
+return b.usdc
+"#;
+    let result = call(&client, "execute", json!({ "program": program }))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(true), "{}", text(&result));
+
+    let structured = result.structured_content.clone().unwrap();
+    assert_eq!(structured["status"]["type"], "error");
+    assert_eq!(structured["status"]["kind"], "ToolError");
+    assert_eq!(structured["result"], Value::Null);
+    let trace_id = structured["trace_id"].as_str().unwrap();
+
+    let message = text(&result);
+    let status_message = structured["status"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with(&format!("ToolError: {status_message}\n")),
+        "{message}"
+    );
+    assert!(
+        message.contains("amount 60 exceeds amount_max 50"),
+        "{message}"
+    );
+    assert!(message.contains(trace_id), "{message}");
+    assert!(message.contains("have already happened"), "{message}");
+
+    client.cancel().await.unwrap();
+    server.shutdown().await;
+    mock.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn caught_denial_is_a_success() {
+    let mock = common::start_mock_downstream().await;
+    let (config, _dir) = gateway_config(&mock.url(), PRINCIPALS);
+    let server = server::start(config).await.unwrap();
+    let client = connect(&server, AGENT_TOKEN).await;
+
+    // The program reports that nothing happened; that is its answer, not a
+    // failed run.
+    let program = r#"
+local ok, err = pcall(function()
+  return wallet.transfer{ to = "0x1", amount = 60 }
+end)
+return { ok = ok, error = err }
+"#;
+    let result = call(&client, "execute", json!({ "program": program }))
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(false), "{}", text(&result));
+    let structured = result.structured_content.clone().unwrap();
+    assert_eq!(structured["status"], json!({ "type": "ok" }));
+    assert_eq!(structured["result"]["ok"], json!(false));
+    assert!(structured["trace_id"].is_string());
+    let content: Value = serde_json::from_str(&text(&result)).unwrap();
+    assert_eq!(content, structured);
 
     client.cancel().await.unwrap();
     server.shutdown().await;
@@ -261,6 +337,7 @@ async fn lint_error_is_a_tool_error_with_the_line() {
         let message = text(&result);
         assert!(message.starts_with("line 2: "), "{tool}: {message}");
         assert!(message.contains("os"), "{tool}: {message}");
+        assert!(result.structured_content.is_none(), "{tool}: nothing ran");
     }
 
     let ok = call(&client, "check", json!({ "program": "return 1" }))

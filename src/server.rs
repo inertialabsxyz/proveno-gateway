@@ -32,6 +32,7 @@ use sha2::{Digest, Sha256};
 use crate::config::GatewayConfig;
 use crate::dialect::lua_guide;
 use crate::engine::{Engine, ExecuteError, ExecuteRequest};
+use crate::trace::RunStatus;
 
 pub const LUA_GUIDE_URI: &str = "proveno://lua-guide";
 pub const LUA_GUIDE_NAME: &str = "lua-guide";
@@ -266,7 +267,24 @@ impl Gateway {
             Ok(response) => {
                 let value = serde_json::to_value(&response)
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-                Ok(CallToolResult::structured(value))
+                match &response.status {
+                    RunStatus::Ok => Ok(CallToolResult::structured(value)),
+                    // A framework passes a successful tool result to the model
+                    // as if all were well, so a failed run is a tool error. The
+                    // structured content is unchanged; the text leads with the
+                    // failure and warns that a retry repeats the tool calls.
+                    RunStatus::Error { kind, message } => {
+                        let text = format!(
+                            "{kind}: {message}\nThe run is recorded as trace {}, and any tool \
+                             calls it made before failing have already happened, so check them \
+                             before running it again.",
+                            response.trace_id
+                        );
+                        let mut result = CallToolResult::structured_error(value);
+                        result.content = vec![ContentBlock::text(text)];
+                        Ok(result)
+                    }
+                }
             }
             // The model wrote the program, so it can fix it and resubmit.
             Err(ExecuteError::Lint(lint)) => Ok(CallToolResult::error(vec![ContentBlock::text(
