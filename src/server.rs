@@ -31,7 +31,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::GatewayConfig;
 use crate::dialect::lua_guide;
-use crate::engine::{Engine, ExecuteRequest};
+use crate::engine::{Engine, ExecuteError, ExecuteRequest};
 
 pub const LUA_GUIDE_URI: &str = "proveno://lua-guide";
 pub const LUA_GUIDE_NAME: &str = "lua-guide";
@@ -251,54 +251,37 @@ fn check_schema() -> JsonObject {
     }))
 }
 
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
-    payload
-        .downcast_ref::<String>()
-        .map(String::as_str)
-        .or_else(|| payload.downcast_ref::<&str>().copied())
-        .unwrap_or("non-string panic payload")
-}
-
 impl Gateway {
     async fn execute(
         &self,
         principal: String,
         args: ExecuteArgs,
     ) -> Result<CallToolResult, ErrorData> {
-        let engine = Arc::clone(&self.engine);
         let request = ExecuteRequest {
             program: args.program,
             session: args.session,
             request: args.request,
         };
-        // The engine panics when the store cannot be written. Running it on its
-        // own task turns that panic into a JSON-RPC error for this request
-        // instead of a dropped connection, and the server keeps serving. The
-        // program is not retried: its tool calls may already have been made.
-        let run = tokio::spawn(async move { engine.execute(&principal, request).await }).await;
-        match run {
-            Ok(Ok(response)) => {
+        match self.engine.execute(&principal, request).await {
+            Ok(response) => {
                 let value = serde_json::to_value(&response)
                     .map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
                 Ok(CallToolResult::structured(value))
             }
-            Ok(Err(lint)) => Ok(CallToolResult::error(vec![ContentBlock::text(
+            // The model wrote the program, so it can fix it and resubmit.
+            Err(ExecuteError::Lint(lint)) => Ok(CallToolResult::error(vec![ContentBlock::text(
                 lint.to_string(),
             )])),
-            Err(e) if e.is_panic() => {
-                let payload = e.into_panic();
-                let message = panic_message(payload.as_ref());
-                eprintln!("proveno-gateway: execute failed: {message}");
-                if message.starts_with("trace store:") {
-                    Err(ErrorData::internal_error(
-                        "the trace could not be stored; the program's tool calls may have been made",
-                        None,
-                    ))
-                } else {
-                    Err(ErrorData::internal_error("execute failed internally", None))
-                }
+            // Not something the model can fix, so it is a JSON-RPC error rather
+            // than a tool result. The program is not retried: its tool calls may
+            // already have been made.
+            Err(e @ ExecuteError::Store(_)) => {
+                eprintln!("proveno-gateway: execute failed: {e}");
+                Err(ErrorData::internal_error(
+                    "the trace could not be stored; the program's tool calls may have been made",
+                    None,
+                ))
             }
-            Err(e) => Err(ErrorData::internal_error(format!("execute: {e}"), None)),
         }
     }
 }
