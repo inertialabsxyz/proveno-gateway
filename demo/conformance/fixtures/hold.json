@@ -1,0 +1,8 @@
+{
+  "name": "hold",
+  "about": "The same task, but ETH/USD moved only 40 basis points, so no transfer may happen.",
+  "task": "The hot wallet is 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 and the vault is 0x70997970C51812dc3A010C7d01b50e0d17dc79C8. Rebalance the two to 60/40 (60% in the hot wallet) if the ETH/USD price has moved more than 2% in the last 24 hours.",
+  "prices": { "ETH/USD": { "price": 2510.00, "price_24h_ago": 2500.00 } },
+  "balances_milli": { "hot": 620, "vault": 380 },
+  "expect": { "transfer_milli": 0 }
+}

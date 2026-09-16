@@ -113,6 +113,7 @@ trace.
 | `rebalance.lua` | The program the agent wrote |
 | `direct_transfer.lua` | Step 4's program, calling the tool through the primitive |
 | `run.sh` | The four steps |
+| `conformance/` | A harness measuring whether a model writes a correct program from the description alone; costs money, not in `make check` |
 
 `demo/` is a Cargo workspace of its own, so the gateway's `make check` does not
 build it. Build it with `(cd demo && cargo build --workspace)`.

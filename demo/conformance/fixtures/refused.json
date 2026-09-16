@@ -1,0 +1,8 @@
+{
+  "name": "refused",
+  "about": "The price moved 203 basis points and the hot wallet is 100 milli-ETH over target, above the policy's amount_max of 50. The transfer is refused, so no transfer may happen, and the program must catch the refusal and finish.",
+  "task": "The hot wallet is 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 and the vault is 0x70997970C51812dc3A010C7d01b50e0d17dc79C8. Rebalance the two to 60/40 (60% in the hot wallet) if the ETH/USD price has moved more than 2% in the last 24 hours. If the transfer is refused, report that in the result instead of failing.",
+  "prices": { "ETH/USD": { "price": 2550.75, "price_24h_ago": 2500.00 } },
+  "balances_milli": { "hot": 700, "vault": 300 },
+  "expect": { "transfer_milli": 0 }
+}
