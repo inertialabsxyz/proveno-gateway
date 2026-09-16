@@ -1,0 +1,9 @@
+# The demo policy, spec section 3.6. `demo/run.sh` edits this file in place:
+# step 3 tightens `amount_max` to 10, step 4 drops `wallet.transfer` from the
+# allow-list. It restores this version on exit.
+
+[principals.demo-agent]
+allow = ["market.get_price", "wallet.get_balance", "wallet.transfer"]
+
+[constraints."wallet.transfer"]
+amount_max = 50

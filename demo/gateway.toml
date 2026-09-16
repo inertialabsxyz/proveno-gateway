@@ -1,0 +1,39 @@
+# The demo gateway, spec section 3.6. Run from this directory, so that the
+# downstream `command` and the relative paths below resolve.
+#
+# Every secret is `env:NAME`. `demo/run.sh` sets them: the signing key, the
+# agent's bearer token and the market key are generated per run, and the wallet
+# key is Anvil's first test account.
+
+[server]
+listen = "127.0.0.1:7777"
+signing_key = "env:PROVENO_SIGNING_KEY"
+
+[vm]
+gas_limit = 2_000_000
+memory_limit_bytes = 16_777_216
+max_tool_calls = 64
+
+# The gateway spawns this child and hands it `WALLET_PRIVATE_KEY`. Its
+# environment is otherwise cleared except for PATH and HOME, so the chain it
+# signs against is an argument, not a variable.
+[[downstream]]
+name = "wallet"
+transport = "stdio"
+command = "target/debug/demo-wallet --rpc-url http://127.0.0.1:8545"
+credential = "env:WALLET_PRIVATE_KEY"
+
+[[downstream]]
+name = "market"
+transport = "http"
+url = "http://127.0.0.1:8081/mcp"
+credential = "env:MARKET_KEY"
+
+[policy]
+file = "policy.toml"
+
+[store]
+dir = "traces"
+
+[principals.demo-agent]
+token = "env:DEMO_AGENT_TOKEN"
