@@ -5,13 +5,16 @@ mod common;
 
 use std::path::Path;
 use std::sync::LazyLock;
+use std::sync::atomic::Ordering;
 
+use proveno::ToolCallStatus;
 use proveno::compiler::program_hash::compute_program_hash_sha256;
 use proveno_gateway::config::{self, GatewayConfig};
 use proveno_gateway::dialect::compile_program;
 use proveno_gateway::engine::{Engine, ExecuteError, ExecuteRequest};
 use proveno_gateway::store::TraceStore;
-use proveno_gateway::trace::{CallDecision, RunStatus, Trace, signing_key_from_hex};
+use proveno_gateway::trace::{CallDecision, Provenance, RunStatus, Trace, signing_key_from_hex};
+use rmcp::model::Tool;
 use serde_json::json;
 
 const WALLET_CREDENTIAL_VAR: &str = "PROVENO_GATEWAY_ENGINE_TEST_WALLET_KEY";
@@ -547,4 +550,182 @@ async fn unwritable_store_is_an_error_not_a_panic() {
             .starts_with("trace store: ")
     );
     mock.shutdown().await;
+}
+
+const BALANCE_PROVENANCE: &str =
+    r#"{"block":12,"chain":"31337","reference":"0xblockhash","type":"onchain"}"#;
+
+/// A downstream serving the three tools the policy names: `get_balance` and
+/// `transfer` report `onchain` provenance, `get_price` reports none.
+async fn start_attesting() -> common::AttestingDownstream {
+    let schema = common::open_object_schema;
+    common::start_attesting_downstream(vec![
+        common::AttestingTool {
+            tool: Tool::new("get_balance", "Balance.", schema()),
+            response: json!({ "eth_milli": 620 }),
+            // Deliberately not in canonical key order.
+            provenance: Some(json!({
+                "type": "onchain", "reference": "0xblockhash", "chain": "31337", "block": 12
+            })),
+        },
+        common::AttestingTool {
+            tool: Tool::new("transfer", "Transfer.", schema()),
+            response: json!({ "tx_hash": "0xtx" }),
+            provenance: Some(json!({
+                "type": "onchain", "chain": "31337", "block": 13, "reference": "0xtx"
+            })),
+        },
+        common::AttestingTool {
+            tool: Tool::new("get_price", "Price.", schema()),
+            response: json!({ "price": 2500 }),
+            provenance: None,
+        },
+    ])
+    .await
+}
+
+/// An attested read, then an unattested one, then a transfer the policy denies.
+const ATTESTED_PROGRAM: &str = r#"
+local b = wallet.get_balance{ address = "0x1" }
+local p = market.get_price{ pair = "ETH/USD" }
+local ok, err = pcall(function()
+  return wallet.transfer{ to = "0x1", amount = 60 }
+end)
+return { eth_milli = b.eth_milli, price = p.price, denied = err }
+"#;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn reported_provenance_is_tagged_in_the_entry_and_bound_in_the_record() {
+    let attesting = start_attesting().await;
+    let (config, _dir) = gateway_config(&attesting.downstream.url(), "");
+    let engine = Engine::new(config.clone()).await.unwrap();
+
+    let resp = engine
+        .execute("demo-agent", request(ATTESTED_PROGRAM))
+        .await
+        .unwrap();
+    assert_eq!(resp.status, RunStatus::Ok);
+    // Provenance travels beside the response, never in the value the program sees.
+    assert_eq!(
+        resp.result,
+        Some(json!({
+            "eth_milli": 620,
+            "price": 2500,
+            "denied": "policy: wallet.transfer: amount 60 exceeds amount_max 50",
+        }))
+    );
+
+    let trace = stored_trace(&config, &resp.trace_id);
+    verify(&trace);
+    let balance = &trace.entries[0];
+    assert_eq!(
+        balance.provenance,
+        Provenance::Onchain {
+            chain: "31337".into(),
+            block: 12,
+            reference: "0xblockhash".into(),
+        }
+    );
+    assert_eq!(balance.record.attestation, BALANCE_PROVENANCE.as_bytes());
+    // The next call reported nothing, so it gets no attestation, not the last one.
+    let price = &trace.entries[1];
+    assert_eq!(price.provenance, Provenance::Unsigned);
+    assert!(price.record.attestation.is_empty());
+    for entry in &trace.entries {
+        let response = String::from_utf8_lossy(&entry.record.response_canonical);
+        assert!(!response.contains("proveno"), "{response}");
+        assert!(!response.contains("0xblockhash"), "{response}");
+    }
+    attesting.downstream.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn provenance_attestation_is_byte_identical_across_runs() {
+    let attesting = start_attesting().await;
+    let (config, _dir) = gateway_config(&attesting.downstream.url(), "");
+    let engine = Engine::new(config.clone()).await.unwrap();
+
+    let mut blobs = Vec::new();
+    for _ in 0..2 {
+        let resp = engine
+            .execute("demo-agent", request(ATTESTED_PROGRAM))
+            .await
+            .unwrap();
+        let trace = stored_trace(&config, &resp.trace_id);
+        blobs.push(
+            trace
+                .entries
+                .iter()
+                .map(|e| e.record.attestation.clone())
+                .collect::<Vec<_>>(),
+        );
+    }
+    assert!(!blobs[0][0].is_empty());
+    assert_eq!(blobs[0], blobs[1]);
+    attesting.downstream.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn denied_call_gets_no_provenance_or_attestation() {
+    let attesting = start_attesting().await;
+    let (config, _dir) = gateway_config(&attesting.downstream.url(), "");
+    let engine = Engine::new(config.clone()).await.unwrap();
+
+    let resp = engine
+        .execute("demo-agent", request(ATTESTED_PROGRAM))
+        .await
+        .unwrap();
+    let trace = stored_trace(&config, &resp.trace_id);
+    let denied = &trace.entries[2];
+    assert_eq!(denied.record.tool_name, "wallet.transfer");
+    assert!(matches!(
+        denied.decision,
+        CallDecision::DeniedByPolicy { .. }
+    ));
+    assert_eq!(denied.provenance, Provenance::Unsigned);
+    assert!(denied.record.attestation.is_empty());
+    // The downstream would have attested the transfer, but it was never asked.
+    assert_eq!(attesting.calls.load(Ordering::SeqCst), 2);
+    attesting.downstream.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn malformed_provenance_fails_the_call_catchably() {
+    let attesting = common::start_attesting_downstream(vec![common::AttestingTool {
+        tool: Tool::new("get_balance", "Balance.", common::open_object_schema()),
+        response: json!({ "eth_milli": 620 }),
+        provenance: Some(json!({ "type": "onchain", "chain": "31337", "block": 12 })),
+    }])
+    .await;
+    let (config, _dir) = gateway_config(&attesting.downstream.url(), "");
+    let engine = Engine::new(config.clone()).await.unwrap();
+
+    let resp = engine
+        .execute(
+            "demo-agent",
+            request(
+                r#"
+local ok, err = pcall(function() return wallet.get_balance{ address = "0x1" } end)
+return { ok = ok, error = err }
+"#,
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status, RunStatus::Ok);
+    let result = resp.result.unwrap();
+    assert_eq!(result["ok"], false);
+    assert_eq!(
+        result["error"],
+        "downstream: wallet.get_balance: malformed provenance from downstream `wallet`: \
+         `proveno/provenance`: missing field `reference`"
+    );
+
+    let trace = stored_trace(&config, &resp.trace_id);
+    let entry = &trace.entries[0];
+    assert_eq!(entry.decision, CallDecision::Allowed);
+    assert_eq!(entry.record.status, ToolCallStatus::Error);
+    assert_eq!(entry.provenance, Provenance::Unsigned);
+    assert!(entry.record.attestation.is_empty());
+    attesting.downstream.shutdown().await;
 }

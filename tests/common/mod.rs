@@ -247,3 +247,100 @@ impl ServerHandler for FixedServer {
         }
     }
 }
+
+/// One tool of an attesting downstream: its fixed structured response and, if
+/// any, the object it reports under `proveno/provenance` in the result's `_meta`.
+#[allow(dead_code)] // Each test binary uses a subset of these fixtures.
+pub struct AttestingTool {
+    pub tool: Tool,
+    pub response: Value,
+    pub provenance: Option<Value>,
+}
+
+/// A running attesting downstream and the number of `tools/call` requests it
+/// has served, so a test can show a refused call never reached it.
+#[allow(dead_code)] // Each test binary uses a subset of these fixtures.
+pub struct AttestingDownstream {
+    pub downstream: MockDownstream,
+    pub calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// Starts a downstream over streamable HTTP whose tools each return a fixed
+/// structured response and, when configured, a fixed provenance report in the
+/// result's `_meta`.
+#[allow(dead_code)] // Each test binary uses a subset of these fixtures.
+pub async fn start_attesting_downstream(tools: Vec<AttestingTool>) -> AttestingDownstream {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let config = StreamableHttpServerConfig::default();
+    let server = AttestingServer {
+        tools: std::sync::Arc::new(tools),
+        calls: calls.clone(),
+    };
+    let service: StreamableHttpService<AttestingServer, LocalSessionManager> =
+        StreamableHttpService::new(
+            move || Ok(server.clone()),
+            Default::default(),
+            config.clone(),
+        );
+    let router = axum::Router::new().nest_service("/mcp", service);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let token = config.cancellation_token.clone();
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router)
+            .with_graceful_shutdown(async move { token.cancelled_owned().await })
+            .await;
+    });
+    AttestingDownstream {
+        downstream: MockDownstream {
+            url: format!("http://{addr}/mcp"),
+            config,
+            server,
+        },
+        calls,
+    }
+}
+
+#[derive(Clone)]
+struct AttestingServer {
+    tools: std::sync::Arc<Vec<AttestingTool>>,
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ServerHandler for AttestingServer {
+    fn get_info(&self) -> ServerInfo {
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, ErrorData> {
+        Ok(ListToolsResult::with_all_items(
+            self.tools.iter().map(|t| t.tool.clone()).collect(),
+        ))
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, ErrorData> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let Some(tool) = self.tools.iter().find(|t| t.tool.name == request.name) else {
+            return Err(ErrorData::invalid_params(
+                format!("unknown tool `{}`", request.name),
+                None,
+            ));
+        };
+        let mut result = CallToolResult::structured(tool.response.clone());
+        if let Some(provenance) = &tool.provenance {
+            let mut meta = rmcp::model::MetaObject::new();
+            meta.0
+                .insert("proveno/provenance".into(), provenance.clone());
+            result.meta = Some(meta);
+        }
+        Ok(result.into())
+    }
+}
