@@ -6,7 +6,7 @@ use proveno::compiler::{CompileError, compile, proto::CompiledProgram};
 use proveno::parser::{lexer::ParseError, parse};
 use serde::{Deserialize, Serialize};
 
-pub const DIALECT_VERSION: &str = "2";
+pub const DIALECT_VERSION: &str = "3";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, thiserror::Error)]
 #[error("line {line}: {message}")]
@@ -33,7 +33,7 @@ pub struct LintError {
 /// - Decimal strings are split by hand. Step 7 adds `decimal.parse`; when it
 ///   lands, that sentence becomes one call.
 const DIALECT_RULES: &str = "\
-# Lua dialect (version 2)
+# Lua dialect (version 3)
 
 Programs are a restricted, deterministic Lua. The rules below are enforced
 before the program runs; a violation is returned as a line-numbered error.
@@ -85,6 +85,10 @@ before the program runs; a violation is returned as a line-numbered error.
   and not `tool.call(...)`. A failed or denied call raises an error; catch it
   with `local ok, res = pcall(function() return market.get_price{ ... } end)`.
   `pcall(tool.call, ...)` is not supported.
+- A run that fails, such as on an uncaught denial, comes back as an error result
+  whose text starts with the status kind, as in `ToolError: ...`, and any tool
+  calls it made have already happened. To report a partial outcome as a
+  success, catch the denial with `pcall` and return what happened.
 - Join strings with `..`, as in `\"tx \" .. hash`. `string.format` is available
   for widths and padding.
 - The value of the final `return` is the result.
@@ -249,6 +253,18 @@ mod tests {
         }
         assert!(rules.contains("There are no string patterns."));
         assert!(rules.contains("`return a, b` does not compile"));
+    }
+
+    #[test]
+    fn dialect_rules_say_a_failed_run_is_an_error_and_pcall_reports_a_partial_outcome() {
+        let rules = dialect_rules();
+        assert!(rules.contains("comes back as an error result"), "{rules}");
+        assert!(rules.contains("`ToolError: ...`"), "{rules}");
+        assert!(rules.contains("have already happened"), "{rules}");
+        assert!(
+            rules.contains("catch the denial with `pcall` and return what happened"),
+            "{rules}"
+        );
     }
 
     #[test]

@@ -72,7 +72,8 @@ async fn execute(
         .map(|t| t.text.as_str())
         .collect();
     if result.is_error == Some(true) {
-        // A lint error: the program never ran, so there is no trace.
+        // A lint error, where nothing ran, or a failed run, whose text names
+        // the status kind and the trace.
         anyhow::bail!("{text}");
     }
     let value = result.structured_content.unwrap_or(Value::String(text));
