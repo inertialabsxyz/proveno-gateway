@@ -6,7 +6,7 @@ use proveno::compiler::{CompileError, compile, proto::CompiledProgram};
 use proveno::parser::{lexer::ParseError, parse};
 use serde::{Deserialize, Serialize};
 
-pub const DIALECT_VERSION: &str = "1";
+pub const DIALECT_VERSION: &str = "2";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, thiserror::Error)]
 #[error("line {line}: {message}")]
@@ -17,8 +17,23 @@ pub struct LintError {
 
 /// The dialect rules, as proveno-core v0.3.0 enforces them. Changing this text
 /// changes every description hash, so bump `DIALECT_VERSION` with it.
+///
+/// Every claim here is read off the pinned core, not off standard Lua: the
+/// library list is `build_string_module`, `build_math_module`,
+/// `build_table_module` and `build_json_module` in `src/vm/builtins.rs`, and
+/// the globals are the names `compile_name` resolves in `src/compiler/
+/// codegen.rs`. `tests/dialect.rs` runs every name listed below.
+///
+/// Two sentences are dated on purpose:
+///
+/// - The fourth `plain` argument to `string.find` is ignored by the pinned
+///   core, which then refuses the pattern metacharacter anyway. Step 12 of the
+///   agent prompts makes the flag do a literal search; when that core is
+///   pinned here, say so instead of sending the model to `find_literal`.
+/// - Decimal strings are split by hand. Step 7 adds `decimal.parse`; when it
+///   lands, that sentence becomes one call.
 const DIALECT_RULES: &str = "\
-# Lua dialect (version 1)
+# Lua dialect (version 2)
 
 Programs are a restricted, deterministic Lua. The rules below are enforced
 before the program runs; a violation is returned as a line-numbered error.
@@ -29,11 +44,39 @@ before the program runs; a violation is returned as a line-numbered error.
 - Integers only. There are no floats and no float literals. Non-integer numbers
   returned by tools arrive as decimal strings, such as \"2500.75\". Use `//` for
   division; `/` is not supported.
-- No globals. Declare every variable and function `local`.
+- No user-defined globals. Declare every variable and function `local`; the
+  only globals are the library names listed below.
 - Iterate tables with `pairs_sorted(t)`; `pairs` is also sorted, and `ipairs`
   walks arrays.
-- Standard library: `string.*`, `math.*`, `table.*`, `json.*`, `pcall`,
-  `error`, `type`, `pairs_sorted`, `pairs`, `ipairs`, `log`, `print`.
+- Every call returns exactly one value, and a function returns one value:
+  `return a, b` does not compile. The one two-value form in the language is
+  `local ok, err = pcall(function() ... end)`.
+- Functions take a fixed parameter list; `...` is rejected.
+- Call library functions by name: `string.sub(s, 1, 4)`. The colon form
+  `s:sub(1, 4)` is a type error, because strings have no methods.
+- The standard library is this list and nothing else. Any other name under
+  `string`, `math`, `table` or `json` is nil, and calling it fails.
+  - string: `len`, `sub`, `find`, `find_literal`, `upper`, `lower`, `rep`,
+    `byte`, `char`, `format`.
+  - math: `abs`, `min`, `max`, `scale_div(a, b, scale)` (`a * scale / b`,
+    truncated towards zero), `maxinteger`, `mininteger`.
+  - table: `insert`, `remove`, `concat`, `sort`, `move`.
+  - json: `encode`, `decode`, `decode_strings`. `decode` rejects a number with
+    a fractional part or an exponent; `decode_strings` returns every number as
+    its source text.
+  - Globals: `pcall`, `error`, `type`, `tostring`, `tonumber`, `select`,
+    `unpack`, `pairs_sorted`, `pairs`, `ipairs`, `log`, `print`. `type`
+    answers \"integer\" for a number, never \"number\".
+- There are no string patterns. `string.match`, `string.gmatch` and
+  `string.gsub` exist but every call fails at run time.
+  `string.find(s, needle [, init])` searches for a literal and fails if
+  `needle` holds any of `^ $ ( ) % . [ ] * + - ?`; its fourth argument is
+  ignored, so search for those with `string.find_literal(s, needle [, init])`.
+  Both return the 1-based start index only, or nil.
+- `string.format` takes `%d`, `%s`, `%x` and `%%`, with no width or precision.
+- `tonumber` parses whole numbers only: it returns nil for \"2500.75\". To use a
+  decimal string, find the dot with `string.find_literal(s, \".\")` and cut it
+  with `string.sub`, then work in scaled integers.
 - Time and randomness exist only as tool calls, so they are recorded.
 - Tools are called as `server.tool{ arg = value }`. A failed or denied tool call
   raises an error; catch it with
@@ -187,6 +230,20 @@ mod tests {
         ] {
             assert!(rules.contains(name), "missing {name}");
         }
+    }
+
+    #[test]
+    fn dialect_rules_name_find_literal_and_do_not_promise_a_whole_module() {
+        let rules = dialect_rules();
+        assert!(rules.contains("find_literal"));
+        for wildcard in ["`string.*`", "`math.*`", "`table.*`", "`json.*`"] {
+            assert!(!rules.contains(wildcard), "still promises {wildcard}");
+        }
+        for unsupported in ["`string.match`", "`string.gmatch`", "`string.gsub`"] {
+            assert!(rules.contains(unsupported), "missing {unsupported}");
+        }
+        assert!(rules.contains("There are no string patterns."));
+        assert!(rules.contains("`return a, b` does not compile"));
     }
 
     #[test]
