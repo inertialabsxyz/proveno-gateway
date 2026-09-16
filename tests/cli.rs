@@ -21,7 +21,6 @@ fn subcommands_parse_and_report_not_implemented() {
             "demo-agent",
             "program.lua",
         ],
-        &["replay", "--config", "/nonexistent", "0190"],
     ] {
         let out = run(args);
         assert_eq!(out.status.code(), Some(2), "{args:?}");
@@ -37,4 +36,13 @@ fn check_requires_principal() {
     let out = run(&["check", "--config", "/nonexistent", "program.lua"]);
     assert!(!out.status.success());
     assert!(!String::from_utf8_lossy(&out.stderr).contains("not implemented"));
+}
+
+#[test]
+fn replay_with_an_unreadable_config_fails() {
+    let out = run(&["replay", "--config", "/nonexistent", "0190"]);
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("replay failed"), "{stderr}");
+    assert!(stderr.contains("/nonexistent"), "{stderr}");
 }

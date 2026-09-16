@@ -311,7 +311,7 @@ fn check_lua_names(tool: &ToolSchema) -> Result<(), String> {
 
 /// Canonical JSON of the return value, which is what the trace commits to.
 /// Core does not enforce `max_output_bytes`, so the gateway does, here.
-fn output_json(value: &LuaValue, max_output_bytes: usize) -> Result<String, VmError> {
+pub(crate) fn output_json(value: &LuaValue, max_output_bytes: usize) -> Result<String, VmError> {
     let bytes = canonical_serialize(value).map_err(VmError::from)?;
     if bytes.len() > max_output_bytes {
         return Err(VmError::OutputExceeded);
@@ -322,7 +322,7 @@ fn output_json(value: &LuaValue, max_output_bytes: usize) -> Result<String, VmEr
 /// `kind` is the `VmError` variant. A line inside the program is reported
 /// against the agent's own numbering; a line inside the generated prelude is
 /// dropped, since the agent never wrote it.
-fn error_status(e: &VmError, prelude_lines: u32) -> RunStatus {
+pub(crate) fn error_status(e: &VmError, prelude_lines: u32) -> RunStatus {
     let (kind, message) = match e {
         VmError::WithLine(line, inner) => {
             let RunStatus::Error { kind, message } = error_status(inner, prelude_lines) else {
