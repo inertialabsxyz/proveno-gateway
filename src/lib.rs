@@ -19,4 +19,4 @@ pub mod trace;
 pub mod values;
 
 /// The proveno-core release the VM comes from, recorded in every trace header.
-pub const VM_VERSION: &str = "proveno-core v0.3.0";
+pub const VM_VERSION: &str = "proveno-core v0.4.0";

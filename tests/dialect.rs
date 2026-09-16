@@ -141,19 +141,19 @@ fn find_takes_a_literal_and_returns_one_value() {
 }
 
 #[test]
-fn find_refuses_a_metacharacter_even_with_the_plain_flag() {
-    // Step 12 of the agent prompts makes the fourth argument do a literal
-    // search in core. Until that core is pinned here, the flag is ignored and
-    // the metacharacter check still refuses the call, so the rules send the
-    // model to `find_literal`.
-    let out = run(
-        "local ok, err = pcall(function() return string.find(\"a.b\", \".\", 1, true) end)\n\
+fn find_refuses_a_metacharacter_unless_the_plain_flag_is_true() {
+    let refused = run(
+        "local ok, err = pcall(function() return string.find(\"a.b\", \".\") end)\n\
          return { ok = ok, err = err }",
     );
-    assert_eq!(field(&out, "ok"), LuaValue::Boolean(false));
+    assert_eq!(field(&refused, "ok"), LuaValue::Boolean(false));
     assert_eq!(
-        field(&out, "err"),
+        field(&refused, "err"),
         string("string patterns not supported; use literal string.find only")
+    );
+    assert_eq!(
+        run("return string.find(\"a.b\", \".\", 1, true)"),
+        LuaValue::Integer(2)
     );
     assert_eq!(
         run("return string.find_literal(\"a.b\", \".\")"),
@@ -162,19 +162,12 @@ fn find_refuses_a_metacharacter_even_with_the_plain_flag() {
 }
 
 #[test]
-fn the_colon_form_on_a_string_is_a_type_error() {
-    // Idiomatic Lua, and the message says nothing, so the rules name the
-    // by-name form instead.
-    let program = "local s = \"hello\"\nreturn s:sub(1, 2)";
-    let compiled = compile_program("", program).expect("the colon form compiles");
-    let err = Vm::new(VmConfig::default(), NoTools)
-        .execute(&compiled, LuaValue::Nil)
-        .expect_err("the colon form must fail at run time");
-    assert!(format!("{err:?}").contains("TypeError"), "{err:?}");
+fn the_colon_form_on_a_string_calls_the_string_module() {
     assert_eq!(
-        run("local s = \"hello\"\nreturn string.sub(s, 1, 2)"),
-        string("he")
+        run("local s = \"hello\"\nreturn s:sub(1, 2)"),
+        run("local s = \"hello\"\nreturn string.sub(s, 1, 2)")
     );
+    assert_eq!(run("local s = \"hello\"\nreturn s:sub(1, 2)"), string("he"));
 }
 
 #[test]
@@ -186,16 +179,12 @@ fn variadic_parameters_are_rejected() {
 }
 
 #[test]
-fn format_takes_d_s_x_and_percent_only() {
+fn format_takes_d_s_x_and_percent_with_flags_width_and_precision() {
     assert_eq!(
         run("return string.format(\"%d %s %x %%\", 7, \"a\", 255)"),
         string("7 a ff %")
     );
-    let out = run(
-        "local ok, err = pcall(function() return string.format(\"%5d\", 7) end)\n\
-         return { ok = ok, err = err }",
-    );
-    assert_eq!(field(&out, "ok"), LuaValue::Boolean(false));
+    assert_eq!(run("return string.format(\"%5d\", 7)"), string("    7"));
 }
 
 #[test]
