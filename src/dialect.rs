@@ -78,10 +78,15 @@ before the program runs; a violation is returned as a line-numbered error.
   decimal string, find the dot with `string.find_literal(s, \".\")` and cut it
   with `string.sub`, then work in scaled integers.
 - Time and randomness exist only as tool calls, so they are recorded.
-- Tools are called as `server.tool{ arg = value }`. A failed or denied tool call
-  raises an error; catch it with
-  `local ok, res = pcall(function() return server.tool{ ... } end)`.
+- A tool is called by the exact name given in the Tool API below, as
+  `<downstream>.<tool>{ arg = value }`. Those two names are placeholders for
+  the ones listed there: if the API lists `market.get_price`, write
+  `market.get_price{ pair = \"ETH/USD\" }`, not `server.market.get_price{...}`
+  and not `tool.call(...)`. A failed or denied call raises an error; catch it
+  with `local ok, res = pcall(function() return market.get_price{ ... } end)`.
   `pcall(tool.call, ...)` is not supported.
+- Join strings with `..`, as in `\"tx \" .. hash`. `string.format` is available
+  for widths and padding.
 - The value of the final `return` is the result.
 ";
 
