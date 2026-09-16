@@ -14,7 +14,10 @@ fn run(args: &[&str]) -> std::process::Output {
 fn check_requires_principal() {
     let out = run(&["check", "--config", "/nonexistent", "program.lua"]);
     assert!(!out.status.success());
-    assert!(!String::from_utf8_lossy(&out.stderr).contains("not implemented"));
+    // Clap must reject the call, rather than the subcommand running and failing
+    // on the config, so name the argument it reports as missing.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("--principal"), "{stderr}");
 }
 
 #[test]
