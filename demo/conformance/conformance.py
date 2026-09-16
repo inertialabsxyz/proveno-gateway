@@ -554,6 +554,8 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
 
     world = World(out, ports)
+    # A custom key variable name may not look secret to `_secret_var`.
+    world.env.pop(model.key_var, None)
     world.write_config()
     summaries = []
     started = time.monotonic()
