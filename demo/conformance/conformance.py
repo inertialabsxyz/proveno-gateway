@@ -451,7 +451,7 @@ def render(summary: dict) -> str:
         f"fixture {summary['fixture']}",
         f"  one-shot:       {summary['one_shot_correct']}/{n} compiled and correct",
         f"  one round trip: {summary['one_round_trip_correct']}/{n} "
-        f"({summary['lint_errors_fed_back']} lint errors fed back, {summary['fixed_after_feedback']} fixed)",
+        f"(lint errors fed back {summary['lint_errors_fed_back']}, fixed {summary['fixed_after_feedback']})",
         "  first attempt:  " + ", ".join(
             f"{OUTCOME_LABELS[o]} {summary['first_attempt'][o]}" for o in OUTCOMES
         ),
