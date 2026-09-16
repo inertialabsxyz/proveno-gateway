@@ -2,7 +2,7 @@
 # A workspace of its own, not a member of the root crate: the demo is not part
 # of the gateway's `make check`.
 resolver = "3"
-members = ["wallet", "market"]
+members = ["wallet", "market", "client"]
 
 [workspace.package]
 version = "0.1.0"
