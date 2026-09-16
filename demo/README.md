@@ -7,6 +7,48 @@ enforced at the call.
 It runs entirely on localhost against a throwaway Anvil chain. The transactions
 are real signed transactions; the chain is not.
 
+## What the script starts
+
+```mermaid
+flowchart TB
+    C["demo-client<br/>stands in for an agent"]
+    G["proveno-gateway serve<br/>127.0.0.1:7777/mcp"]
+    W["demo-wallet<br/>stdio child of the gateway"]
+    M["demo-market<br/>127.0.0.1:8081"]
+    A["anvil<br/>127.0.0.1:8545"]
+    F["prices.json"]
+    S["traces/<br/>signed traces, programs, descriptions"]
+
+    C -->|"execute(program), bearer token"| G
+    G -->|"tools/call, WALLET_PRIVATE_KEY injected<br/>into the child's environment"| W
+    G -->|"tools/call, Authorization: Bearer"| M
+    G --> S
+    W -->|"signed transactions"| A
+    M --> F
+```
+
+The gateway is the only process that holds a credential. It spawns `demo-wallet`
+with an environment cleared down to `PATH`, `HOME` and `WALLET_PRIVATE_KEY`, so
+the key never reaches the program or the model.
+
+## The four steps
+
+```mermaid
+flowchart TB
+    S1["1. Real work<br/>rebalance.lua reads the price and both balances,<br/>transfers 20 milli-ETH, and lands a real transaction.<br/>Prints the result, cast tx, and the signed trace."]
+    S2["2. Replay<br/>anvil, demo-market and demo-wallet stopped.<br/>proveno-gateway replay prints replay matched<br/>with the same output, gas_used and memory_used."]
+    S3["3. Policy change<br/>amount_max drops to 10 and the same program runs.<br/>The transfer is refused before dispatch; the program<br/>catches it and the trace records denied_by_policy."]
+    S4["4. Off the allow-list<br/>wallet.transfer leaves the allow-list. It vanishes from<br/>the generated API, and calling tool.call directly<br/>is refused at run time and recorded."]
+
+    S1 -->|"stop the world"| S2
+    S2 -->|"restart, edit policy.toml"| S3
+    S3 -->|"remove the tool, restart"| S4
+```
+
+Steps 1 and 2 are the two halves of the claim: the agent did real work, and the
+record reproduces it exactly. Steps 3 and 4 are the control: the policy decides
+at the call, and the refusal is in the record either way.
+
 ## Prerequisites
 
 - A Rust toolchain (`cargo`).
