@@ -17,9 +17,9 @@ use axum::response::{IntoResponse, Response};
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, GetPromptRequestParams,
     GetPromptResponse, GetPromptResult, JsonObject, ListPromptsResult, ListResourcesResult,
-    ListToolsResult, PaginatedRequestParams, Prompt, PromptMessage, ReadResourceRequestParams,
-    ReadResourceResponse, ReadResourceResult, Resource, ResourceContents, Role, ServerCapabilities,
-    ServerInfo, Tool,
+    ListToolsResult, PaginatedRequestParams, Prompt, PromptMessage, ProtocolVersion,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, Resource,
+    ResourceContents, Role, ServerCapabilities, ServerInfo, Tool,
 };
 use rmcp::service::RequestContext;
 use rmcp::transport::streamable_http_server::{
@@ -286,7 +286,18 @@ impl Gateway {
     }
 }
 
+/// The newest protocol revision this server implements. rmcp 3.3 advertises
+/// `2026-07-28` by default but does not emit that revision's `ttlMs` and
+/// `cacheScope` cache hints, so a client that negotiates it rejects every
+/// `tools/list` result. Advertising up to `2025-11-25` keeps the negotiation
+/// on a revision rmcp actually satisfies.
+const MAX_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V_2025_11_25;
+
 impl ServerHandler for Gateway {
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
+        std::borrow::Cow::Borrowed(ProtocolVersion::known_up_to(&MAX_PROTOCOL_VERSION))
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(
             ServerCapabilities::builder()

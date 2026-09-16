@@ -127,6 +127,23 @@ fn text(result: &CallToolResult) -> String {
         .collect()
 }
 
+/// Sends `body` as a `POST /mcp` with the given token and returns the response.
+async fn post_body(server: &Server, token: &str, body: &str) -> String {
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\n\
+         Accept: application/json, text/event-stream\r\nAuthorization: Bearer {token}\r\n\
+         Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut stream = tokio::net::TcpStream::connect(server.local_addr())
+        .await
+        .unwrap();
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    String::from_utf8_lossy(&response).into_owned()
+}
+
 /// Sends a bare `POST /mcp` and returns the HTTP status code.
 async fn post_status(server: &Server, authorization: Option<&str>) -> u16 {
     let body = r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#;
@@ -424,5 +441,31 @@ async fn check_cli_prints_the_lint_error_or_ok() {
     assert_eq!(stdout, "ok\n");
     assert_eq!(code, Some(0));
 
+    mock.shutdown().await;
+}
+
+/// rmcp 3.3 advertises protocol `2026-07-28` by default but never emits that
+/// revision's `ttlMs` and `cacheScope` cache hints, so a client that negotiates
+/// it rejects every `tools/list` result with "Invalid result for tools/list".
+/// Claude Code does exactly that. The server must not offer that revision.
+#[tokio::test(flavor = "multi_thread")]
+async fn initialize_never_negotiates_a_revision_without_cache_hints() {
+    let mock = common::start_mock_downstream().await;
+    let (config, _dir) = gateway_config(&mock.url(), PRINCIPALS);
+    let server = server::start(config).await.unwrap();
+
+    let response = post_body(
+        &server,
+        AGENT_TOKEN,
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2026-07-28",
+           "capabilities":{},"clientInfo":{"name":"test","version":"1"}}}"#,
+    )
+    .await;
+
+    assert!(
+        response.contains(r#""protocolVersion":"2025-11-25""#),
+        "{response}"
+    );
+    assert!(!response.contains("2026-07-28"), "{response}");
     mock.shutdown().await;
 }
