@@ -46,8 +46,10 @@ pub struct TraceHeader {
     pub principal: String,
     /// Lowercase hex.
     pub program_hash: String,
-    /// Lowercase hex.
-    pub policy_hash: String,
+    /// Lowercase hex of the gateway's canonical rules file. This is not a
+    /// proof's `policy_hash`, which commits to proveno-zk's `OraclePolicy`:
+    /// they are two documents with two commitments (spec section 6).
+    pub gateway_policy_hash: String,
     /// Lowercase hex.
     pub description_hash: String,
     pub vm_version: String,
@@ -144,7 +146,7 @@ pub(crate) fn sample_trace() -> Trace {
             session: Some("s1".into()),
             principal: "demo-agent".into(),
             program_hash: "00".repeat(32),
-            policy_hash: "11".repeat(32),
+            gateway_policy_hash: "11".repeat(32),
             description_hash: "22".repeat(32),
             vm_version: "0.2.0".into(),
             vm_config: VmSettings {
@@ -221,7 +223,7 @@ mod tests {
                 session: Some("s1".into()),
                 principal: "demo-agent".into(),
                 program_hash: "00".repeat(32),
-                policy_hash: "11".repeat(32),
+                gateway_policy_hash: "11".repeat(32),
                 description_hash: "22".repeat(32),
                 vm_version: crate::VM_VERSION.into(),
                 vm_config: VmSettings::default(),
@@ -273,7 +275,7 @@ mod tests {
     const PINNED_JSON: &str = concat!(
         r#"{"header":{"trace_id":"0190","session":"s1","principal":"demo-agent","#,
         r#""program_hash":"0000000000000000000000000000000000000000000000000000000000000000","#,
-        r#""policy_hash":"1111111111111111111111111111111111111111111111111111111111111111","#,
+        r#""gateway_policy_hash":"1111111111111111111111111111111111111111111111111111111111111111","#,
         r#""description_hash":"2222222222222222222222222222222222222222222222222222222222222222","#,
         r#""vm_version":"0.2.0","#,
         r#""vm_config":{"gas_limit":2000000,"memory_limit_bytes":16777216,"max_call_depth":64,"#,
@@ -298,8 +300,8 @@ mod tests {
 
     /// Ed25519 is deterministic, so a fixed key and trace give a fixed signature.
     const PINNED_SIGNATURE: &str = concat!(
-        "8eaa7eddb8f83396a43190277e6918b0f933069ce7fd6c8cd1a41660eb7891c5",
-        "969eab78bcf6ab7fdc1f5f004da990d85cf8c89a7bce4c535fea80e4c59a5805",
+        "0af5e68afa230d3443bec345671ea46a455ff8d3429ed85f77789c14dae5b84c",
+        "1b02eda6484432e5130c356a30ba3f9c90d0125b77d3df559fc8c88ad4a0eb0a",
     );
 
     fn key(byte: u8) -> SigningKey {

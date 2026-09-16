@@ -197,7 +197,7 @@ impl Engine {
                 session: req.session,
                 principal: principal.to_string(),
                 program_hash,
-                policy_hash: hex::encode(self.policy.policy_hash()),
+                gateway_policy_hash: hex::encode(self.policy.policy_hash()),
                 description_hash,
                 vm_version: crate::VM_VERSION.to_string(),
                 vm_config: self.vm.clone(),
