@@ -80,7 +80,12 @@ wallet is 20 milli-ETH over its 60% target, and transfers 20 milli-ETH to the
 vault. The step prints the generated `wallet.transfer` signature from the tool
 description the model was given, the program's result, the transaction as `cast
 tx` sees it, and the signed trace: header, every call with its policy decision
-and provenance tag, and a footer with the output, gas and memory.
+and provenance tag, and a footer with the output, gas and memory. It then lists
+each call's decision and tag: the wallet's calls are
+`onchain(eip155:31337, block, reference)`, with the block hash for a balance read
+and the transaction hash for the transfer, and the price read is `unsigned`,
+because `demo-market` reports nothing. The tag is `demo-wallet`'s own claim,
+bound into the signed trace; the gateway does not check it against the chain.
 
 **Step 2: a run can be reproduced exactly from its record.** The chain, the
 price server and the wallet server are stopped, and `proveno-gateway replay`
@@ -104,7 +109,7 @@ trace.
 
 | File | What it is |
 |---|---|
-| `wallet/` | `demo-wallet`, a stdio MCP server that signs real transactions with `alloy` |
+| `wallet/` | `demo-wallet`, a stdio MCP server that signs real transactions with `alloy` and reports `onchain` provenance |
 | `market/` | `demo-market`, an http MCP server serving prices from `prices.json` |
 | `client/` | `demo-client`, a tiny MCP client standing in for an agent |
 | `gateway.toml` | The gateway config: two downstreams, the policy file, the trace store |
@@ -161,6 +166,7 @@ cast rpc anvil_setBalance 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 \
     "$(cast to-hex 620000000000000000)" --rpc-url http://127.0.0.1:8545
 cast rpc anvil_setBalance 0x70997970C51812dc3A010C7d01b50e0d17dc79C8 \
     "$(cast to-hex 380000000000000000)" --rpc-url http://127.0.0.1:8545
+cast rpc anvil_mine --rpc-url http://127.0.0.1:8545
 
 cargo build --workspace
 ./target/debug/demo-market --listen 127.0.0.1:8081 --fixture prices.json &

@@ -112,6 +112,26 @@ Only the status kind is compared, not its message: `program_hash` deliberately
 excludes line numbers, so a message's line can differ between two sources that
 compile to the same bytecode.
 
+## Provenance
+
+A downstream can say where a response came from by putting an object under the
+reserved key `proveno/provenance` in the tool result's `_meta`:
+
+```json
+{ "type": "onchain", "chain": "eip155:31337", "block": 1, "reference": "0x3363...c58f" }
+```
+
+`type` is `unsigned`, `signed` (`by`, `sig`), `onchain` (`chain`, `block`,
+`reference`) or `notarized` (`scheme`, `reference`). The gateway sets the
+entry's `provenance` tag from it and puts the object, as canonical JSON, in the
+record's `attestation`, which core binds into `attestation_hash`. The program
+never sees it. A result with no report is `unsigned`; a report that is not
+exactly one of those shapes fails the call, as a catchable tool error.
+
+The gateway binds what the downstream reported and verifies none of it. An
+`onchain` tag means the tool server claimed the answer came from that chain at
+that block; checking the claim is left to whoever consumes the trace.
+
 ## Demo
 
 `demo/` runs the whole thing against a local Anvil chain: an agent rebalances a
@@ -120,9 +140,9 @@ at the call. See [demo/README.md](demo/README.md).
 
 ## Status
 
-Complete through milestone 4 of the spec: MCP edges, host layer, replay and the
-demo. Provenance is bind-only and always `unsigned` in this prototype, and no
-proof is generated. The spec is `planning/proveno-gateway-spec.md` in the
+Complete through milestone 5 of the spec: MCP edges, host layer, replay, the
+demo, and provenance tags reported by downstreams. Provenance is bind-only, and
+no proof is generated. The spec is `planning/proveno-gateway-spec.md` in the
 umbrella repository.
 
 ## Licence

@@ -4,17 +4,27 @@
 //! resolved here at connect time and attached to the transport: as the named
 //! environment variable of a stdio child, or as a bearer token on every HTTP
 //! request. Nothing above this module ever sees them.
+//!
+//! A downstream may report where a response came from in the result's `_meta`,
+//! under [`PROVENANCE_META_KEY`]. This module reads it and hands it up beside
+//! the response, never inside it. It checks only that the report is well
+//! formed; it does not verify the claim, and nothing in the gateway does.
 
 use std::collections::BTreeMap;
 
 use rmcp::ServiceExt;
-use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
+use rmcp::model::{CallToolRequestParams, CallToolResult, MetaObject, Tool};
 use rmcp::service::{RoleClient, RunningService};
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::transport::{StreamableHttpClientTransport, TokioChildProcess};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{DownstreamConfig, Transport};
+use crate::trace::Provenance;
+
+/// The reserved result `_meta` key a downstream reports its provenance under
+/// (spec section 3.4).
+pub const PROVENANCE_META_KEY: &str = "proveno/provenance";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolSchema {
@@ -36,6 +46,20 @@ impl ToolSchema {
 pub struct Downstreams {
     clients: BTreeMap<String, RunningService<RoleClient, ()>>,
     tools: Vec<ToolSchema>,
+}
+
+/// A successful `tools/call`, split into what the program sees and what only
+/// the trace sees.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolResponse {
+    /// The value mapped to the program's table. Metadata never reaches it.
+    pub value: serde_json::Value,
+    /// The tag the downstream reported; `Unsigned` if it reported none.
+    pub provenance: Provenance,
+    /// The downstream's provenance object as it reported it, as canonical
+    /// JSON (keys sorted, no whitespace). Empty for `Unsigned`. The gateway
+    /// binds these bytes and does not verify them.
+    pub attestation: Vec<u8>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -71,7 +95,7 @@ impl Downstreams {
         &self,
         qualified: &str,
         args: serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
+    ) -> Result<ToolResponse, String> {
         let Some((server, tool)) = qualified.split_once('.') else {
             return Err(format!("unknown tool `{qualified}`"));
         };
@@ -90,11 +114,20 @@ impl Downstreams {
         };
         let mut params = CallToolRequestParams::new(tool.to_string());
         params.arguments = arguments;
-        let result = client
+        let mut result = client
             .call_tool(params)
             .await
             .map_err(|e| format!("{qualified}: {e}"))?;
-        map_result(result)
+        let meta = result.meta.take();
+        let value = map_result(result)?;
+        let (provenance, attestation) = read_provenance(meta.as_ref()).map_err(|e| {
+            format!("{qualified}: malformed provenance from downstream `{server}`: {e}")
+        })?;
+        Ok(ToolResponse {
+            value,
+            provenance,
+            attestation,
+        })
     }
 }
 
@@ -191,6 +224,65 @@ fn map_result(result: CallToolResult) -> Result<serde_json::Value, String> {
     })
 }
 
+/// Reads the provenance a downstream reported in a successful result's
+/// `_meta`. No report is `Unsigned` with no attestation. A report that is not
+/// exactly one of the four tags with that tag's fields is an error, never a
+/// quiet `Unsigned`: a server that means to attest and gets it wrong should
+/// hear about it.
+///
+/// Returns the typed tag and the attestation blob: the reported object,
+/// verbatim, as canonical JSON. Only its shape is checked here.
+fn read_provenance(meta: Option<&MetaObject>) -> Result<(Provenance, Vec<u8>), String> {
+    let Some(reported) = meta.and_then(|m| m.get(PROVENANCE_META_KEY)) else {
+        return Ok((Provenance::Unsigned, Vec::new()));
+    };
+    if !reported.is_object() {
+        return Err(format!("`{PROVENANCE_META_KEY}` must be an object"));
+    }
+    let provenance: Provenance = serde_json::from_value(reported.clone())
+        .map_err(|e| format!("`{PROVENANCE_META_KEY}`: {e}"))?;
+    let typed = serde_json::to_value(&provenance).expect("provenance serializes to JSON");
+    let (serde_json::Value::Object(reported_fields), serde_json::Value::Object(typed_fields)) =
+        (reported, &typed)
+    else {
+        unreachable!("both are objects");
+    };
+    let mut unknown: Vec<&str> = reported_fields
+        .keys()
+        .filter(|k| !typed_fields.contains_key(*k))
+        .map(String::as_str)
+        .collect();
+    if !unknown.is_empty() {
+        unknown.sort_unstable();
+        return Err(format!(
+            "`{PROVENANCE_META_KEY}`: `{}` does not define field(s) {}",
+            typed_fields["type"].as_str().unwrap_or_default(),
+            unknown
+                .iter()
+                .map(|k| format!("`{k}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    if let Some((field, _)) = typed_fields.iter().find(|(_, v)| v.as_str() == Some("")) {
+        return Err(format!("`{PROVENANCE_META_KEY}`: field `{field}` is empty"));
+    }
+    let attestation = match provenance {
+        Provenance::Unsigned => Vec::new(),
+        _ => canonical_json(reported_fields),
+    };
+    Ok((provenance, attestation))
+}
+
+/// JSON with keys sorted and no whitespace, so the same report gives the same
+/// bytes whatever order the downstream wrote its keys in. Only called on a
+/// report that has passed `read_provenance`'s checks, whose values are all
+/// strings and unsigned integers.
+fn canonical_json(fields: &serde_json::Map<String, serde_json::Value>) -> Vec<u8> {
+    let sorted: BTreeMap<&String, &serde_json::Value> = fields.iter().collect();
+    serde_json::to_vec(&sorted).expect("strings and integers serialize")
+}
+
 #[cfg(test)]
 mod tests {
     use rmcp::model::ContentBlock;
@@ -281,5 +373,127 @@ mod tests {
         );
         let result = CallToolResult::success(vec![]);
         assert_eq!(map_result(result), Ok(json!({ "text": "" })));
+    }
+
+    fn meta(provenance: serde_json::Value) -> MetaObject {
+        let mut meta = MetaObject::new();
+        meta.0.insert(PROVENANCE_META_KEY.into(), provenance);
+        meta
+    }
+
+    #[test]
+    fn missing_provenance_is_unsigned_with_no_attestation() {
+        assert_eq!(
+            read_provenance(None),
+            Ok((Provenance::Unsigned, Vec::new()))
+        );
+        let mut other = MetaObject::new();
+        other.set_traceparent("00-0af7651916cd43dd8448eb211c80319c-00f067aa0ba902b7-01");
+        assert_eq!(
+            read_provenance(Some(&other)),
+            Ok((Provenance::Unsigned, Vec::new()))
+        );
+    }
+
+    #[test]
+    fn reported_provenance_maps_to_each_variant() {
+        let cases = [
+            (json!({ "type": "unsigned" }), Provenance::Unsigned, ""),
+            (
+                json!({ "type": "signed", "by": "feed-key-1", "sig": "0xabcd" }),
+                Provenance::Signed {
+                    by: "feed-key-1".into(),
+                    sig: "0xabcd".into(),
+                },
+                r#"{"by":"feed-key-1","sig":"0xabcd","type":"signed"}"#,
+            ),
+            (
+                json!({ "type": "onchain", "chain": "31337", "block": 12, "reference": "0xbeef" }),
+                Provenance::Onchain {
+                    chain: "31337".into(),
+                    block: 12,
+                    reference: "0xbeef".into(),
+                },
+                r#"{"block":12,"chain":"31337","reference":"0xbeef","type":"onchain"}"#,
+            ),
+            (
+                json!({ "type": "notarized", "scheme": "tlsnotary", "reference": "sha256:00" }),
+                Provenance::Notarized {
+                    scheme: "tlsnotary".into(),
+                    reference: "sha256:00".into(),
+                },
+                r#"{"reference":"sha256:00","scheme":"tlsnotary","type":"notarized"}"#,
+            ),
+        ];
+        for (reported, tag, blob) in cases {
+            assert_eq!(
+                read_provenance(Some(&meta(reported.clone()))),
+                Ok((tag, blob.as_bytes().to_vec())),
+                "{reported}"
+            );
+        }
+    }
+
+    #[test]
+    fn provenance_attestation_ignores_reported_key_order() {
+        let a: serde_json::Value = serde_json::from_str(
+            r#"{"type":"onchain","reference":"0xbeef","block":12,"chain":"31337"}"#,
+        )
+        .unwrap();
+        let b: serde_json::Value = serde_json::from_str(
+            r#"{ "chain": "31337", "block": 12, "type": "onchain", "reference": "0xbeef" }"#,
+        )
+        .unwrap();
+        let (_, blob_a) = read_provenance(Some(&meta(a))).unwrap();
+        let (_, blob_b) = read_provenance(Some(&meta(b))).unwrap();
+        assert_eq!(blob_a, blob_b);
+    }
+
+    #[test]
+    fn malformed_provenance_is_an_error_not_unsigned() {
+        let cases = [
+            (json!(null), "must be an object"),
+            (json!("onchain"), "must be an object"),
+            (json!({}), "missing field `type`"),
+            (json!({ "type": "gossip" }), "unknown variant `gossip`"),
+            (
+                json!({ "type": "onchain", "chain": "1", "block": 12 }),
+                "missing field `reference`",
+            ),
+            (
+                json!({ "type": "onchain", "chain": "1", "block": "12", "reference": "0x1" }),
+                "invalid type",
+            ),
+            (
+                json!({ "type": "onchain", "chain": "1", "block": -1, "reference": "0x1" }),
+                "invalid value",
+            ),
+            (
+                json!({ "type": "onchain", "chain": "1", "block": 12, "reference": "0x1", "proof": "0x2" }),
+                "`onchain` does not define field(s) `proof`",
+            ),
+            (
+                json!({ "type": "unsigned", "sig": "0x1" }),
+                "`unsigned` does not define field(s) `sig`",
+            ),
+            (
+                json!({ "type": "signed", "by": "", "sig": "0x1" }),
+                "field `by` is empty",
+            ),
+        ];
+        for (reported, expected) in cases {
+            let e = read_provenance(Some(&meta(reported.clone()))).unwrap_err();
+            assert!(e.contains(PROVENANCE_META_KEY), "{reported}: {e}");
+            assert!(e.contains(expected), "{reported}: {e}");
+        }
+    }
+
+    #[test]
+    fn provenance_metadata_never_reaches_the_value() {
+        let mut result = CallToolResult::structured(json!({ "eth_milli": 3 }));
+        result.meta = Some(meta(
+            json!({ "type": "onchain", "chain": "1", "block": 12, "reference": "0x1" }),
+        ));
+        assert_eq!(map_result(result), Ok(json!({ "eth_milli": 3 })));
     }
 }

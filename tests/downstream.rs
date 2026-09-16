@@ -78,7 +78,8 @@ async fn call_returns_structured_content() {
     let result = downstreams
         .call("market.get_price", json!({ "pair": "ETH/USDC" }))
         .await
-        .unwrap();
+        .unwrap()
+        .value;
     // Numbers pass through untouched; mapping to integers is values.rs's job.
     assert_eq!(
         result,
@@ -96,7 +97,8 @@ async fn transfer_requires_the_bearer_credential() {
     let result = downstreams
         .call("wallet.transfer", json!({ "to": "0x1", "amount": 40 }))
         .await
-        .unwrap();
+        .unwrap()
+        .value;
     assert_eq!(result, json!({ "tx": "0xabc", "amount": 40 }));
 }
 
@@ -188,7 +190,11 @@ async fn stdio_child_gets_only_path_home_and_credential() {
         credential: Some(Secret::try_from(format!("env:{STDIO_CREDENTIAL_VAR}")).unwrap()),
     };
     let downstreams = Downstreams::connect(&[config]).await.unwrap();
-    let result = downstreams.call("env.env_keys", json!({})).await.unwrap();
+    let result = downstreams
+        .call("env.env_keys", json!({}))
+        .await
+        .unwrap()
+        .value;
     let keys: Vec<&str> = result["keys"]
         .as_array()
         .unwrap()

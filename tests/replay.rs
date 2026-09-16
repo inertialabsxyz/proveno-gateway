@@ -8,12 +8,15 @@ use std::process::Command;
 use std::sync::LazyLock;
 
 use proveno::compiler::program_hash::compute_program_hash_sha256;
+use proveno::{OracleTape, ToolCallRecord};
 use proveno_gateway::config::{self, GatewayConfig};
 use proveno_gateway::dialect::compile_program;
 use proveno_gateway::engine::{Engine, ExecuteRequest};
 use proveno_gateway::replay::{ReplayReport, replay};
 use proveno_gateway::store::TraceStore;
 use proveno_gateway::trace::{RunStatus, Trace, signing_key_from_hex};
+use rmcp::model::Tool;
+use serde_json::json;
 
 const WALLET_CREDENTIAL_VAR: &str = "PROVENO_GATEWAY_REPLAY_TEST_WALLET_KEY";
 const SIGNING_KEY_VAR: &str = "PROVENO_GATEWAY_REPLAY_TEST_SIGNING_KEY";
@@ -415,5 +418,68 @@ async fn replay_command_prints_mismatches_and_exits_1() {
             trace.footer.gas_used,
             trace.footer.gas_used - 1
         )
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn run_with_provenance_attestations_replays_and_matches() {
+    let schema = common::open_object_schema;
+    let attesting = common::start_attesting_downstream(vec![
+        common::AttestingTool {
+            tool: Tool::new("get_balance", "Balance.", schema()),
+            response: json!({ "eth_milli": 620 }),
+            provenance: Some(json!({
+                "type": "onchain", "chain": "31337", "block": 12, "reference": "0xblockhash"
+            })),
+        },
+        common::AttestingTool {
+            tool: Tool::new("get_price", "Price.", schema()),
+            response: json!({ "price": 2500 }),
+            provenance: None,
+        },
+    ])
+    .await;
+    let (config, _dir) = gateway_config(&attesting.downstream.url(), "");
+    let engine = Engine::new(config.clone()).await.unwrap();
+    let resp = engine
+        .execute(
+            "demo-agent",
+            ExecuteRequest {
+                program: r#"
+local b = wallet.get_balance{ address = "0x1" }
+local p = market.get_price{ pair = "ETH/USD" }
+return b.eth_milli + p.price
+"#
+                .into(),
+                session: None,
+                request: None,
+            },
+        )
+        .await
+        .unwrap();
+    drop(engine);
+    attesting.downstream.shutdown().await;
+
+    let (trace, report) = assert_replays(&config, &resp.trace_id);
+    assert_eq!(report.output.as_deref(), Some("3120"));
+    assert_eq!(
+        trace.entries[0].record.attestation,
+        br#"{"block":12,"chain":"31337","reference":"0xblockhash","type":"onchain"}"#
+    );
+    assert!(trace.entries[1].record.attestation.is_empty());
+
+    // The blobs travel in the tape replay is built from.
+    let records: Vec<ToolCallRecord> = trace.entries.iter().map(|e| e.record.clone()).collect();
+    let tape = OracleTape::from_records(&records);
+    assert_eq!(tape.attestations[0], trace.entries[0].record.attestation);
+
+    // And they are under the trace signature.
+    let mut tampered = trace.clone();
+    tampered.entries[0].record.attestation[1] = b'x';
+    overwrite_trace(&config, &tampered);
+    let err = replay(&config, &resp.trace_id).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("signature verification failed"),
+        "{err:#}"
     );
 }
