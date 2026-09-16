@@ -393,6 +393,21 @@ fn decimal_scales_run_from_0_to_18_and_exponents_are_refused() {
 }
 
 #[test]
+fn a_tiny_tool_number_arrives_in_exponent_form_that_decimal_parse_refuses() {
+    let response: serde_json::Value = serde_json::from_str(r#"{ "p": 0.0000001 }"#).unwrap();
+    let table = proveno_gateway::values::json_to_table(&response).unwrap();
+    let text = table
+        .get(&proveno::types::table::LuaKey::String(LuaString::from_str(
+            "p",
+        )))
+        .cloned()
+        .unwrap();
+    assert_eq!(text, string("1e-7"));
+    let out = run("return pcall(function() return decimal.parse(\"1e-7\", 18) end)");
+    assert_eq!(out, LuaValue::Boolean(false));
+}
+
+#[test]
 fn return_inside_a_generic_for_fails_verification() {
     // A core compiler bug, present in v0.3.0 and v0.4.0. The rules warn about
     // it; when this test fails, core has fixed it, so remove the warning.

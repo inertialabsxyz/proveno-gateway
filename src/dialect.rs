@@ -51,9 +51,10 @@ before the program runs; a violation is returned as a line-numbered error.
   `decimal.rescale(value, from, to)`, which fails rather than drop a non-zero
   digit. `decimal` functions never divide or round; `math.scale_div` divides
   and truncates. Scales run from 0 to 18, and exponents such as \"1e3\" are
-  refused. A field the Tool API types `integer|string(decimal)` can arrive as
-  either, and `decimal.parse` takes only a string, so write
-  `decimal.parse(tostring(v), 2)`. `tonumber` parses whole numbers only: it
+  refused; a very large or very small number from a tool can arrive in that
+  form, such as \"1e-7\". A field the Tool API types
+  `integer|string(decimal)` can arrive as either, and `decimal.parse` takes
+  only a string, so write `decimal.parse(tostring(v), 2)`. `tonumber` parses whole numbers only: it
   returns nil for \"2500.75\".
 - No user-defined globals. Declare every variable and function `local`; the
   only globals are the library names listed below.
