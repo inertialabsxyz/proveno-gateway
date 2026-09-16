@@ -39,7 +39,7 @@ fn example_tool() -> ToolSchema {
 }
 
 /// Records every call; denies names in `deny`, answers the rest with
-/// `{ status = "ok", id = <args.id> }`.
+/// `{ status = "ok", price = "2550.75", id = <args.id> }`.
 struct MockHost {
     calls: Rc<RefCell<Vec<String>>>,
     deny: Vec<&'static str>,
@@ -67,6 +67,11 @@ impl HostInterface for MockHost {
         let mut t = LuaTable::new();
         t.rawset(key("status"), LuaValue::String(LuaString::from_str("ok")))
             .unwrap();
+        t.rawset(
+            key("price"),
+            LuaValue::String(LuaString::from_str("2550.75")),
+        )
+        .unwrap();
         if let Some(id) = args.get(&key("id")) {
             t.rawset(key("id"), id.clone()).unwrap();
         }
@@ -145,6 +150,21 @@ fn denied_call_is_catchable_as_in_the_example() {
         .execute(&program, LuaValue::Nil)
         .unwrap();
     assert_eq!(field(&out.return_value, "ok"), LuaValue::Boolean(false));
+}
+
+#[test]
+fn decimal_example_parses_compares_and_formats_the_price() {
+    let desc = build(&[example_tool()]);
+    let program = compile_program(&desc.prelude, EXAMPLES[3]).unwrap();
+    let out = Vm::new(VmConfig::default(), MockHost::new(vec![]))
+        .execute(&program, LuaValue::Nil)
+        .unwrap();
+    // 2550.75 is above the 2500.00 limit.
+    assert_eq!(field(&out.return_value, "buy"), LuaValue::Boolean(false));
+    assert_eq!(
+        field(&out.return_value, "price"),
+        LuaValue::String(LuaString::from_str("2550.75"))
+    );
 }
 
 #[test]

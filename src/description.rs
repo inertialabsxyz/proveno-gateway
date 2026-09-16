@@ -23,7 +23,7 @@ pub const EXAMPLE_TOOL: (&str, &str) = ("example", "lookup");
 
 /// Fixed example programs. They use a placeholder tool, not the real allow-list,
 /// so the text stays stable.
-pub const EXAMPLES: [&str; 3] = [
+pub const EXAMPLES: [&str; 4] = [
     // Calling a tool with table-call sugar and returning a field.
     "\
 local item = example.lookup{ id = \"a1\" }
@@ -46,6 +46,15 @@ for _, id in ipairs(ids) do
   statuses[id] = item.status
 end
 return { count = #ids, statuses = statuses }",
+    // A decimal price parsed to a scaled integer, compared, and used.
+    "\
+local item = example.lookup{ id = \"a1\" }
+local price = decimal.parse(tostring(item.price), 2)
+local limit = decimal.parse(\"2500.00\", 2)
+if price > limit then
+  return { buy = false, price = decimal.format(price, 2) }
+end
+return { buy = true, cost = decimal.format(price * 3, 2) }",
 ];
 
 /// The examples section of the description and of the lua-guide.

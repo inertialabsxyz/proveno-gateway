@@ -1539,7 +1539,7 @@ dependencies = [
 [[package]]
 name = "proveno"
 version = "0.1.0"
-source = "git+https://github.com/inertialabsxyz/proveno-core.git?tag=v0.3.0#e18d313345d449ec83f0cd30a8e871202dc17fca"
+source = "git+https://github.com/inertialabsxyz/proveno-core.git?tag=v0.4.0#88ae201a33f582732ac0b7e5ecdd98bd79638a07"
 dependencies = [
  "serde",
  "serde_json",

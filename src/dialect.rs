@@ -6,7 +6,7 @@ use proveno::compiler::{CompileError, compile, proto::CompiledProgram};
 use proveno::parser::{lexer::ParseError, parse};
 use serde::{Deserialize, Serialize};
 
-pub const DIALECT_VERSION: &str = "3";
+pub const DIALECT_VERSION: &str = "4";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, thiserror::Error)]
 #[error("line {line}: {message}")]
@@ -15,25 +15,22 @@ pub struct LintError {
     pub message: String,
 }
 
-/// The dialect rules, as proveno-core v0.3.0 enforces them. Changing this text
+/// The dialect rules, as proveno-core v0.4.0 enforces them. Changing this text
 /// changes every description hash, so bump `DIALECT_VERSION` with it.
 ///
 /// Every claim here is read off the pinned core, not off standard Lua: the
 /// library list is `build_string_module`, `build_math_module`,
-/// `build_table_module` and `build_json_module` in `src/vm/builtins.rs`, and
-/// the globals are the names `compile_name` resolves in `src/compiler/
-/// codegen.rs`. `tests/dialect.rs` runs every name listed below.
+/// `build_table_module`, `build_json_module` and `build_decimal_module` in
+/// `src/vm/builtins.rs`, and the globals are the names `compile_name` resolves
+/// in `src/compiler/codegen.rs`. `tests/dialect.rs` runs every name listed
+/// below.
 ///
-/// Two sentences are dated on purpose:
-///
-/// - The fourth `plain` argument to `string.find` is ignored by the pinned
-///   core, which then refuses the pattern metacharacter anyway. Step 12 of the
-///   agent prompts makes the flag do a literal search; when that core is
-///   pinned here, say so instead of sending the model to `find_literal`.
-/// - Decimal strings are split by hand. Step 7 adds `decimal.parse`; when it
-///   lands, that sentence becomes one call.
+/// One rule is dated on purpose: the two shapes that fail bytecode verification
+/// are core compiler bugs present in v0.3.0 and v0.4.0. `tests/dialect.rs`
+/// pins them failing, so the test breaks when a core release fixes them, and
+/// the warning comes out then.
 const DIALECT_RULES: &str = "\
-# Lua dialect (version 3)
+# Lua dialect (version 4)
 
 Programs are a restricted, deterministic Lua. The rules below are enforced
 before the program runs; a violation is returned as a line-numbered error.
@@ -41,21 +38,51 @@ before the program runs; a violation is returned as a line-numbered error.
 - Not available (rejected at parse time): debug, io, os, package, require,
   load, dofile, loadfile, loadstring, collectgarbage, setmetatable,
   getmetatable, rawget, rawset, setfenv, getfenv, coroutine.
-- Integers only. There are no floats and no float literals. Non-integer numbers
-  returned by tools arrive as decimal strings, such as \"2500.75\". Use `//` for
+- Integers only. There are no floats and no float literals. Use `//` for
   division; `/` is not supported.
+- Non-integer numbers returned by tools arrive as decimal strings, such as
+  \"2500.75\". `decimal.parse(text, scale)` turns one into an integer counting
+  units of 10^-scale: `decimal.parse(\"2500.75\", 2)` is 250075. Compare and add
+  integers of the same scale, and turn one back into text with
+  `decimal.format(value, scale)`. Fewer fractional digits than `scale` are
+  padded, so `decimal.parse(\"2500.0\", 2)` is 250000. More is an error even
+  when the extra digits are zeros: `decimal.parse(\"2550.750\", 2)` fails. Parse
+  at a scale at least as large as the digits the tool returns, and narrow with
+  `decimal.rescale(value, from, to)`, which fails rather than drop a non-zero
+  digit. `decimal` functions never divide or round; `math.scale_div` divides
+  and truncates. Scales run from 0 to 18, and exponents such as \"1e3\" are
+  refused; a very large or very small number from a tool can arrive in that
+  form, such as \"1e-7\". A field the Tool API types
+  `integer|string(decimal)` can arrive as either, and `decimal.parse` takes
+  only a string, so write `decimal.parse(tostring(v), 2)`. `tonumber` parses whole numbers only: it
+  returns nil for \"2500.75\".
 - No user-defined globals. Declare every variable and function `local`; the
   only globals are the library names listed below.
 - Iterate tables with `pairs_sorted(t)`; `pairs` is also sorted, and `ipairs`
   walks arrays.
 - Every call returns exactly one value, and a function returns one value:
   `return a, b` does not compile. The one two-value form in the language is
-  `local ok, err = pcall(function() ... end)`.
+  `local ok, err = pcall(function() ... end)`; a third name there gets nil.
+  Anywhere else, as in `local ok = pcall(f)`, `return pcall(f)` or
+  `if pcall(f) then`, `pcall` gives `ok` alone. There is no multiple
+  assignment: `ok, err = pcall(f)` does not compile, so declare the pair with
+  `local`.
 - Functions take a fixed parameter list; `...` is rejected.
-- Call library functions by name: `string.sub(s, 1, 4)`. The colon form
-  `s:sub(1, 4)` is a type error, because strings have no methods.
+- Strings have methods: `s:sub(1, 4)` is `string.sub(s, 1, 4)`, for every
+  `string` function listed below.
+- Two shapes fail before the run with `bytecode verification failed:
+  RetStackMismatch` at line 0. This is a known core bug, not a mistake in the
+  program, but it must be avoided:
+  - `return` in the body of a `for ... in ipairs(...)`, `pairs(...)` or
+    `pairs_sorted(...)` loop, even inside an `if` or an inner loop, and
+    whether or not the loop is in a function. Set a local and `break`, then
+    return after the loop, or loop with `for i = 1, #t do`, where `return`
+    works. A `function() ... end` written in the loop body may `return`, so
+    `pcall(function() return ... end)` inside the loop is fine.
+  - A `function t.name(a)` or `function t:name(a)` statement. Write
+    `t.name = function(self, a) ... end` instead; `t:name(a)` then works.
 - The standard library is this list and nothing else. Any other name under
-  `string`, `math`, `table` or `json` is nil, and calling it fails.
+  `string`, `math`, `table`, `json` or `decimal` is nil, and calling it fails.
   - string: `len`, `sub`, `find`, `find_literal`, `upper`, `lower`, `rep`,
     `byte`, `char`, `format`.
   - math: `abs`, `min`, `max`, `scale_div(a, b, scale)` (`a * scale / b`,
@@ -64,19 +91,22 @@ before the program runs; a violation is returned as a line-numbered error.
   - json: `encode`, `decode`, `decode_strings`. `decode` rejects a number with
     a fractional part or an exponent; `decode_strings` returns every number as
     its source text.
+  - decimal: `parse(text, scale)`, `format(value, scale)`,
+    `rescale(value, from, to)`.
   - Globals: `pcall`, `error`, `type`, `tostring`, `tonumber`, `select`,
     `unpack`, `pairs_sorted`, `pairs`, `ipairs`, `log`, `print`. `type`
     answers \"integer\" for a number, never \"number\".
 - There are no string patterns. `string.match`, `string.gmatch` and
   `string.gsub` exist but every call fails at run time.
-  `string.find(s, needle [, init])` searches for a literal and fails if
-  `needle` holds any of `^ $ ( ) % . [ ] * + - ?`; its fourth argument is
-  ignored, so search for those with `string.find_literal(s, needle [, init])`.
-  Both return the 1-based start index only, or nil.
-- `string.format` takes `%d`, `%s`, `%x` and `%%`, with no width or precision.
-- `tonumber` parses whole numbers only: it returns nil for \"2500.75\". To use a
-  decimal string, find the dot with `string.find_literal(s, \".\")` and cut it
-  with `string.sub`, then work in scaled integers.
+  `string.find(s, needle [, init [, plain]])` fails if `needle` holds any of
+  `^ $ ( ) % . [ ] * + - ?`, unless `plain` is `true`: then it searches for
+  the literal, as `string.find_literal(s, needle [, init])` always does. Both
+  return the 1-based start index only, or nil.
+- `string.format` takes `%d`, `%x`, `%s` and `%%`. `%d`, `%x` and `%s` accept
+  the flags `-` (left-align) and `0` (zero-pad, not on `%s`), and a width and a
+  precision of at most two digits each: `string.format(\"%05d\", 42)` is
+  \"00042\". `%f`, `%e` and `%g` are refused, because there are no floats: use
+  `decimal.format`.
 - Time and randomness exist only as tool calls, so they are recorded.
 - A tool is called by the exact name given in the Tool API below, as
   `<downstream>.<tool>{ arg = value }`. Those two names are placeholders for
@@ -245,7 +275,13 @@ mod tests {
     fn dialect_rules_name_find_literal_and_do_not_promise_a_whole_module() {
         let rules = dialect_rules();
         assert!(rules.contains("find_literal"));
-        for wildcard in ["`string.*`", "`math.*`", "`table.*`", "`json.*`"] {
+        for wildcard in [
+            "`string.*`",
+            "`math.*`",
+            "`table.*`",
+            "`json.*`",
+            "`decimal.*`",
+        ] {
             assert!(!rules.contains(wildcard), "still promises {wildcard}");
         }
         for unsupported in ["`string.match`", "`string.gmatch`", "`string.gsub`"] {
@@ -253,6 +289,22 @@ mod tests {
         }
         assert!(rules.contains("There are no string patterns."));
         assert!(rules.contains("`return a, b` does not compile"));
+        assert!(rules.contains("`...` is rejected"));
+    }
+
+    #[test]
+    fn dialect_rules_describe_decimal_strings_and_drop_the_hand_parsing_idiom() {
+        let rules = dialect_rules();
+        assert!(rules.contains("`decimal.parse(text, scale)`"), "{rules}");
+        assert!(
+            rules.contains("`decimal.parse(\"2550.750\", 2)` fails"),
+            "{rules}"
+        );
+        assert!(!rules.contains("string.byte(s"), "{rules}");
+        assert!(!rules.contains("find the dot"), "{rules}");
+        assert!(!rules.contains("ignored"), "{rules}");
+        assert!(!rules.contains("type error"), "{rules}");
+        assert!(!rules.contains("no width or precision"), "{rules}");
     }
 
     #[test]

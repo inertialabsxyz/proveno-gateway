@@ -41,7 +41,7 @@ fn string(s: &str) -> LuaValue {
 }
 
 /// `(module, name, type)` for every library member the rules list.
-const LIBRARY: [(&str, &str, &str); 24] = [
+const LIBRARY: [(&str, &str, &str); 27] = [
     ("string", "len", "function"),
     ("string", "sub", "function"),
     ("string", "find", "function"),
@@ -66,6 +66,9 @@ const LIBRARY: [(&str, &str, &str); 24] = [
     ("json", "encode", "function"),
     ("json", "decode", "function"),
     ("json", "decode_strings", "function"),
+    ("decimal", "parse", "function"),
+    ("decimal", "format", "function"),
+    ("decimal", "rescale", "function"),
 ];
 
 #[test]
@@ -87,9 +90,16 @@ fn every_library_name_in_the_rules_is_registered_by_core() {
 
 #[test]
 fn a_name_the_rules_leave_out_is_nil() {
-    // Standard Lua has all four. Core has none of them, which is why the rules
-    // list members rather than `string.*`.
-    for absent in ["math.floor", "math.fmod", "string.gfind", "table.unpack"] {
+    // Standard Lua has the first four, and `decimal.round` is a plausible
+    // guess. Core has none of them, which is why the rules list members rather
+    // than `string.*`.
+    for absent in [
+        "math.floor",
+        "math.fmod",
+        "string.gfind",
+        "table.unpack",
+        "decimal.round",
+    ] {
         assert_eq!(run(&format!("return type({absent})")), string("nil"));
     }
 }
@@ -141,19 +151,19 @@ fn find_takes_a_literal_and_returns_one_value() {
 }
 
 #[test]
-fn find_refuses_a_metacharacter_even_with_the_plain_flag() {
-    // Step 12 of the agent prompts makes the fourth argument do a literal
-    // search in core. Until that core is pinned here, the flag is ignored and
-    // the metacharacter check still refuses the call, so the rules send the
-    // model to `find_literal`.
-    let out = run(
-        "local ok, err = pcall(function() return string.find(\"a.b\", \".\", 1, true) end)\n\
+fn find_refuses_a_metacharacter_unless_the_plain_flag_is_true() {
+    let refused = run(
+        "local ok, err = pcall(function() return string.find(\"a.b\", \".\") end)\n\
          return { ok = ok, err = err }",
     );
-    assert_eq!(field(&out, "ok"), LuaValue::Boolean(false));
+    assert_eq!(field(&refused, "ok"), LuaValue::Boolean(false));
     assert_eq!(
-        field(&out, "err"),
+        field(&refused, "err"),
         string("string patterns not supported; use literal string.find only")
+    );
+    assert_eq!(
+        run("return string.find(\"a.b\", \".\", 1, true)"),
+        LuaValue::Integer(2)
     );
     assert_eq!(
         run("return string.find_literal(\"a.b\", \".\")"),
@@ -162,19 +172,44 @@ fn find_refuses_a_metacharacter_even_with_the_plain_flag() {
 }
 
 #[test]
-fn the_colon_form_on_a_string_is_a_type_error() {
-    // Idiomatic Lua, and the message says nothing, so the rules name the
-    // by-name form instead.
-    let program = "local s = \"hello\"\nreturn s:sub(1, 2)";
-    let compiled = compile_program("", program).expect("the colon form compiles");
-    let err = Vm::new(VmConfig::default(), NoTools)
-        .execute(&compiled, LuaValue::Nil)
-        .expect_err("the colon form must fail at run time");
-    assert!(format!("{err:?}").contains("TypeError"), "{err:?}");
-    assert_eq!(
-        run("local s = \"hello\"\nreturn string.sub(s, 1, 2)"),
-        string("he")
+fn the_colon_form_on_a_string_calls_the_string_module() {
+    // Every `string` function the rules list, called both ways.
+    for (method, by_name) in [
+        ("s:len()", "string.len(s)"),
+        ("s:sub(2, 3)", "string.sub(s, 2, 3)"),
+        ("s:find(\"l\")", "string.find(s, \"l\")"),
+        ("s:find(\".\", 1, true)", "string.find(s, \".\", 1, true)"),
+        ("s:find_literal(\".\")", "string.find_literal(s, \".\")"),
+        ("s:upper()", "string.upper(s)"),
+        ("s:lower()", "string.lower(s)"),
+        ("s:rep(2)", "string.rep(s, 2)"),
+        ("s:byte(1)", "string.byte(s, 1)"),
+        ("s:format()", "string.format(s)"),
+    ] {
+        let prelude = "local s = \"Hel.lo\"\n";
+        let via_method = run(&format!("{prelude}return {method}"));
+        assert_eq!(
+            via_method,
+            run(&format!("{prelude}return {by_name}")),
+            "{method}"
+        );
+        assert_ne!(via_method, LuaValue::Nil, "{method}");
+    }
+    // `char` takes no string, so `s:char(66)` is `string.char(s, 66)` and
+    // fails the same way.
+    let out = run("local s = \"A\"\n\
+         local ok, err = pcall(function() return s:char(66) end)\n\
+         local ok2, err2 = pcall(function() return string.char(s, 66) end)\n\
+         return { same = ok == ok2 and err == err2, ok = ok }");
+    assert_eq!(field(&out, "same"), LuaValue::Boolean(true));
+    assert_eq!(field(&out, "ok"), LuaValue::Boolean(false));
+    // A name the module lacks is an error that names it.
+    let out = run(
+        "local s = \"a\"\nlocal ok, err = pcall(function() return s:gfind(\"a\") end)\n\
+         return { ok = ok, err = err }",
     );
+    assert_eq!(field(&out, "ok"), LuaValue::Boolean(false));
+    assert_contains(&field(&out, "err"), "string.gfind does not exist");
 }
 
 #[test]
@@ -186,16 +221,44 @@ fn variadic_parameters_are_rejected() {
 }
 
 #[test]
-fn format_takes_d_s_x_and_percent_only() {
+fn format_takes_d_s_x_and_percent_with_flags_width_and_precision() {
     assert_eq!(
         run("return string.format(\"%d %s %x %%\", 7, \"a\", 255)"),
         string("7 a ff %")
     );
-    let out = run(
-        "local ok, err = pcall(function() return string.format(\"%5d\", 7) end)\n\
-         return { ok = ok, err = err }",
+    // The rules' own example, then `-`, `0`, width and precision on each.
+    assert_eq!(run("return string.format(\"%05d\", 42)"), string("00042"));
+    assert_eq!(
+        run(
+            "return string.format(\"%-5d|%5d|%.3d|%04x|%-4x|%6s|%-6s|%.2s\", \
+             42, 42, 7, 255, 255, \"ab\", \"ab\", \"abcdef\")"
+        ),
+        string("42   |   42|007|00ff|ff  |    ab|ab    |ab")
     );
-    assert_eq!(field(&out, "ok"), LuaValue::Boolean(false));
+    for (spec, needle) in [
+        ("%05s", "flag '0' is not valid with '%s'"),
+        ("%100d", "at most 2 digits"),
+    ] {
+        let out = run(&format!(
+            "local ok, err = pcall(function() return string.format(\"{spec}\", 1) end)\n\
+             return {{ ok = ok, err = err }}"
+        ));
+        assert_eq!(field(&out, "ok"), LuaValue::Boolean(false), "{spec}");
+        assert_contains(&field(&out, "err"), needle);
+    }
+}
+
+#[test]
+fn format_refuses_float_specifiers_and_points_at_decimal_format() {
+    for spec in ["%f", "%.2f", "%e", "%g"] {
+        let out = run(&format!(
+            "local ok, err = pcall(function() return string.format(\"{spec}\", 1) end)\n\
+             return {{ ok = ok, err = err }}"
+        ));
+        assert_eq!(field(&out, "ok"), LuaValue::Boolean(false), "{spec}");
+        assert_contains(&field(&out, "err"), "no floats");
+        assert_contains(&field(&out, "err"), "decimal.format");
+    }
 }
 
 #[test]
@@ -209,21 +272,219 @@ fn a_function_returns_one_value_and_pcall_is_the_two_value_form() {
         run("local ok, err = pcall(function() error(\"boom\") end)\nreturn { ok = ok, err = err }");
     assert_eq!(field(&out, "ok"), LuaValue::Boolean(false));
     assert_eq!(field(&out, "err"), string("boom"));
+    // A third name gets nil.
+    let out = run("local ok, res, extra = pcall(function() return 5 end)\n\
+         return { ok = ok, res = res, extra = extra }");
+    assert_eq!(field(&out, "ok"), LuaValue::Boolean(true));
+    assert_eq!(field(&out, "res"), LuaValue::Integer(5));
+    assert_eq!(field(&out, "extra"), LuaValue::Nil);
 }
 
 #[test]
-fn tonumber_refuses_a_decimal_string_and_the_documented_split_works() {
+fn pcall_in_a_single_value_position_gives_ok_alone() {
+    let fails = "function() error(\"boom\") end";
+    assert_eq!(
+        run(&format!("local ok = pcall({fails})\nreturn ok")),
+        LuaValue::Boolean(false)
+    );
+    assert_eq!(
+        run(&format!("return pcall({fails})")),
+        LuaValue::Boolean(false)
+    );
+    assert_eq!(
+        run(&format!("if pcall({fails}) then return 1 end\nreturn 2")),
+        LuaValue::Integer(2)
+    );
+    assert_eq!(
+        run("return pcall(function() return 5 end)"),
+        LuaValue::Boolean(true)
+    );
+}
+
+#[test]
+fn multiple_assignment_does_not_compile_and_names_the_local_form() {
+    let err = lint("local ok, err\nok, err = pcall(function() return 5 end)\nreturn ok");
+    assert_eq!(err.line, 2);
+    assert!(
+        err.message.contains("`local ok, err = pcall(...)`"),
+        "{}",
+        err.message
+    );
+}
+
+#[test]
+fn tonumber_refuses_a_decimal_string() {
     assert_eq!(run("return tonumber(\"2500\")"), LuaValue::Integer(2500));
     assert_eq!(run("return tonumber(\"2500.75\")"), LuaValue::Nil);
-    // The idiom the rules give: find the dot, cut, scale to hundredths.
-    // Step 7 replaces this with `decimal.parse`.
+}
+
+#[test]
+fn decimal_parse_gives_scaled_integers_and_format_turns_them_back() {
     assert_eq!(
-        run("local s = \"2500.75\"\n\
-             local dot = string.find_literal(s, \".\")\n\
-             local whole = tonumber(string.sub(s, 1, dot - 1))\n\
-             local frac = tonumber(string.sub(s, dot + 1))\n\
-             return whole * 100 + frac"),
+        run("return decimal.parse(\"2500.75\", 2)"),
         LuaValue::Integer(250075)
+    );
+    // Fewer fractional digits than the scale are padded.
+    assert_eq!(
+        run("return decimal.parse(\"2500.0\", 2)"),
+        LuaValue::Integer(250000)
+    );
+    assert_eq!(run("return decimal.format(250075, 2)"), string("2500.75"));
+    assert_eq!(
+        run("return decimal.parse(\"2550.75\", 2) > decimal.parse(\"2500.0\", 2)"),
+        LuaValue::Boolean(true)
+    );
+}
+
+#[test]
+fn decimal_parse_takes_only_a_string_so_tostring_covers_an_integer_field() {
+    let out = run("return pcall(function() return decimal.parse(2500, 2) end)");
+    assert_eq!(out, LuaValue::Boolean(false));
+    assert_eq!(
+        run("return decimal.parse(tostring(2500), 2)"),
+        LuaValue::Integer(250000)
+    );
+    assert_eq!(
+        run("return decimal.parse(tostring(\"2500.75\"), 2)"),
+        LuaValue::Integer(250075)
+    );
+}
+
+#[test]
+fn decimal_parse_refuses_extra_digits_even_when_they_are_zeros() {
+    let out = run(
+        "local ok, err = pcall(function() return decimal.parse(\"2550.750\", 2) end)\n\
+         return { ok = ok, err = err }",
+    );
+    assert_eq!(field(&out, "ok"), LuaValue::Boolean(false));
+    // The error points at the remedy the rules give.
+    assert_contains(&field(&out, "err"), "decimal.rescale");
+    assert_eq!(
+        run("return decimal.rescale(decimal.parse(\"2550.750\", 3), 3, 2)"),
+        LuaValue::Integer(255075)
+    );
+    // Narrowing past a non-zero digit fails rather than drop it.
+    let out = run(
+        "local ok = pcall(function() return decimal.rescale(255075, 2, 1) end)\n\
+         return ok",
+    );
+    assert_eq!(out, LuaValue::Boolean(false));
+}
+
+#[test]
+fn decimal_scales_run_from_0_to_18_and_exponents_are_refused() {
+    for call in [
+        "decimal.parse(\"1\", 18)",
+        "decimal.parse(\"1\", 0)",
+        "decimal.format(1, 18)",
+    ] {
+        let out = run(&format!("return pcall(function() return {call} end)"));
+        assert_eq!(out, LuaValue::Boolean(true), "{call}");
+    }
+    for call in [
+        "decimal.parse(\"1\", 19)",
+        "decimal.format(1, -1)",
+        "decimal.rescale(1, 0, 19)",
+        "decimal.parse(\"1e3\", 2)",
+    ] {
+        let out = run(&format!("return pcall(function() return {call} end)"));
+        assert_eq!(out, LuaValue::Boolean(false), "{call}");
+    }
+}
+
+#[test]
+fn a_tiny_tool_number_arrives_in_exponent_form_that_decimal_parse_refuses() {
+    let response: serde_json::Value = serde_json::from_str(r#"{ "p": 0.0000001 }"#).unwrap();
+    let table = proveno_gateway::values::json_to_table(&response).unwrap();
+    let text = table
+        .get(&proveno::types::table::LuaKey::String(LuaString::from_str(
+            "p",
+        )))
+        .cloned()
+        .unwrap();
+    assert_eq!(text, string("1e-7"));
+    let out = run("return pcall(function() return decimal.parse(\"1e-7\", 18) end)");
+    assert_eq!(out, LuaValue::Boolean(false));
+}
+
+#[test]
+fn return_inside_a_generic_for_fails_verification() {
+    // A core compiler bug, present in v0.3.0 and v0.4.0. The rules warn about
+    // it; when this test fails, core has fixed it, so remove the warning.
+    for iterator in [
+        "ipairs({ 1 })",
+        "pairs({ a = 1 })",
+        "pairs_sorted({ a = 1 })",
+    ] {
+        for program in [
+            format!("for _, v in {iterator} do return false end\nreturn true"),
+            format!("for _, v in {iterator} do if v then return false end end\nreturn true"),
+            format!("for _, v in {iterator} do for i = 1, 2 do return i end end\nreturn true"),
+            format!(
+                "local function f()\n  for _, v in {iterator} do return false end\n  \
+                 return true\nend\nreturn f()"
+            ),
+        ] {
+            let err = lint(&program);
+            assert_eq!(err.line, 0, "{program}");
+            assert!(
+                err.message
+                    .starts_with("bytecode verification failed: RetStackMismatch"),
+                "{program}: {}",
+                err.message
+            );
+        }
+    }
+    // The alternatives the rules give.
+    assert_eq!(
+        run("local found = nil\n\
+             for _, v in ipairs({ 1, 2 }) do\n\
+               if v == 2 then found = v break end\n\
+             end\n\
+             return found"),
+        LuaValue::Integer(2)
+    );
+    assert_eq!(
+        run("local t = { 1, 2 }\n\
+             for i = 1, #t do\n\
+               if t[i] == 2 then return i end\n\
+             end\n\
+             return 0"),
+        LuaValue::Integer(2)
+    );
+    // A function written in the loop body may return, so the pcall idiom works.
+    assert_eq!(
+        run("local n = 0\n\
+             for _, v in ipairs({ 1, 2 }) do\n\
+               local ok, r = pcall(function() return v end)\n\
+               n = n + r\n\
+             end\n\
+             return n"),
+        LuaValue::Integer(3)
+    );
+}
+
+#[test]
+fn a_function_statement_on_a_table_field_fails_verification() {
+    // A core compiler bug, present in v0.3.0 and v0.4.0, whether or not the
+    // function is called. When this test fails, remove the warning.
+    for program in [
+        "local t = {}\nfunction t:add(k) return k + 1 end\nreturn t:add(2)",
+        "local t = {}\nfunction t.add(k) return k + 1 end\nreturn 1",
+    ] {
+        let err = lint(program);
+        assert_eq!(err.line, 0, "{program}");
+        assert!(
+            err.message
+                .starts_with("bytecode verification failed: RetStackMismatch"),
+            "{program}: {}",
+            err.message
+        );
+    }
+    // The alternative the rules give.
+    assert_eq!(
+        run("local t = {}\nt.add = function(self, k) return k + 1 end\nreturn t:add(2)"),
+        LuaValue::Integer(3)
     );
 }
 
@@ -295,6 +556,19 @@ fn integer_division_only() {
         run("return math.scale_div(10, 3, 100)"),
         LuaValue::Integer(333)
     );
+}
+
+fn assert_contains(v: &LuaValue, needle: &str) {
+    match v {
+        LuaValue::String(s) => {
+            let text = String::from_utf8_lossy(s.as_bytes());
+            assert!(
+                text.contains(needle),
+                "{text:?} does not contain {needle:?}"
+            );
+        }
+        other => panic!("expected a string, got {other:?}"),
+    }
 }
 
 fn field(v: &LuaValue, name: &str) -> LuaValue {

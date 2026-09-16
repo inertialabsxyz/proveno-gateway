@@ -120,7 +120,8 @@ build it. Build it with `(cd demo && cargo build --workspace)`.
 
 Amounts are integers in milli-ETH, because the VM has integers and no floats.
 Prices are decimals in the fixture and reach the program as decimal strings, so
-`rebalance.lua` computes the move in basis points from the digits.
+`rebalance.lua` parses them into integer hundredths with `decimal.parse` and
+computes the move in basis points.
 
 ## Secrets
 
