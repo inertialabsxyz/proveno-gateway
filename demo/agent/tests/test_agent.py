@@ -8,11 +8,11 @@ import io
 import json
 from pathlib import Path
 
-from conftest import conformance
-from langchain_core.messages import AIMessage, ToolMessage
+from conftest import TASK, conformance, run_sh
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from scripted import ScriptedChatModel, call, execute, reply
 
-from demo_agent.agent import Outcome, Stop, run
+from demo_agent.agent import MAX_REPLY_CHARS, Outcome, Stop, run, shortened_reply
 
 REBALANCE = (Path(__file__).resolve().parents[2] / "rebalance.lua").read_text()
 # `os` is not in the dialect, so this is rejected before anything runs.
@@ -43,7 +43,7 @@ def agent_run(world, model, **kwargs) -> tuple:
     vault_before = world.balance_wei(conformance.VAULT)
     out = io.StringIO()
     token = world.env["DEMO_AGENT_TOKEN"]
-    report = asyncio.run(run(model, world.fixture["task"], world.gateway_url, token, out, **kwargs))
+    report = asyncio.run(run(model, TASK, world.gateway_url, token, out, **kwargs))
     vault_gain = (world.balance_wei(conformance.VAULT) - vault_before) // conformance.MILLI_WEI
     return report, out.getvalue(), vault_gain
 
@@ -264,7 +264,7 @@ def test_prints_the_message_flow_in_order_as_the_model_receives_it(world):
         f"session {report.session}",
         "SYSTEM ",
         "HUMAN ",
-        world.fixture["task"][:40],
+        TASK[:40],
         "AI ",
         "tool call: execute",
         "```lua",
@@ -313,4 +313,51 @@ def test_quiet_prints_only_the_outcome(world):
         "calls",
     ]
     assert lines[3].startswith("  attempt 2: ok, result {")
-    assert lines[4:] == [f"    trace_id: {trace_id}"]
+    assert lines[4:] == [f"    trace_id: {trace_id}", "final reply from the model:", "  Done."]
+
+
+def test_the_model_is_given_exactly_the_task_run_sh_sends(world):
+    model = ScriptedChatModel(responses=[reply("Nothing to do.")], received=[])
+    agent_run(world, model)
+
+    [human] = [m for m in model.received[0] if isinstance(m, HumanMessage)]
+    assert human.text == run_sh("--print-task").rstrip("\n")
+    # The task names the two accounts this world funds, the ones run.sh funds.
+    assert conformance.HOT in human.text and conformance.VAULT in human.text
+
+
+def test_a_model_that_reads_then_stops_has_its_reply_in_the_summary(world, tmp_path):
+    stopped = "I read the hot wallet's balance, but I cannot see the vault, so I made no transfer."
+    model = ScriptedChatModel(responses=[execute(READ_ONLY), reply(stopped)], received=[])
+    report, out, vault_gain = agent_run(world, model)
+
+    assert report.stop is Stop.ENDED, out
+    assert vault_gain == 0
+    assert report.final_reply == stopped
+    summary = out[out.index("outcome: ") :]
+    assert f"final reply from the model:\n  {stopped}\n" in summary
+    assert report.to_json()["final_reply"] == stopped
+
+    # What run.sh reports when no run made a transfer, from the result file.
+    result_file = tmp_path / "agent-result.json"
+    result_file.write_text(json.dumps(report.to_json()))
+    message = run_sh("--no-transfer-message", str(result_file))
+    assert message == f"no run made a transfer; the model's final reply was:\n{stopped}\n"
+
+
+def test_no_final_reply_when_the_agent_stops_itself(world):
+    model = ScriptedChatModel(
+        responses=[execute(TRANSFERS_THEN_FAILS), reply("unused")], received=[]
+    )
+    report, out, _ = agent_run(world, model)
+    assert report.stop is Stop.RUN_FAILED
+    assert report.final_reply is None
+    assert "final reply from the model" not in out
+
+
+def test_a_long_final_reply_is_truncated_and_says_so():
+    long = "word " * 1000
+    short = shortened_reply(long)
+    assert short.startswith(long[:100])
+    assert short.endswith(f"[truncated: the first {MAX_REPLY_CHARS} of {len(long)} characters]")
+    assert shortened_reply("brief") == "brief"

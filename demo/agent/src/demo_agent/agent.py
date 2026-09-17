@@ -48,6 +48,8 @@ MAX_LINT_STREAK = 3
 MAX_RUNS = 5
 MAX_MODEL_CALLS = 12
 WIDTH = 100
+# The model's final reply, in the summary and the result file.
+MAX_REPLY_CHARS = 1200
 
 SYSTEM_PROMPT = """\
 You operate a wallet through the tools of an MCP server. To act, write a \
@@ -130,6 +132,9 @@ class Report:
     runs: list[Run] = field(default_factory=list)
     stop: Stop | None = None
     protocol_version: str | None = None
+    # The text of the model's last reply, when it ended the task by replying
+    # without a tool call.
+    final_reply: str | None = None
     # tool_call_id -> what the agent made of that `execute` call
     verdicts: dict[str, str] = field(default_factory=dict)
 
@@ -147,6 +152,7 @@ class Report:
             "stop": self.stop.name.lower() if self.stop else None,
             "succeeded": self.succeeded,
             "trace_ids": self.trace_ids,
+            "final_reply": shortened_reply(self.final_reply),
             "runs": [
                 {
                     "attempt": r.attempt,
@@ -294,6 +300,16 @@ def first_execute_of_its_reply(messages: list[BaseMessage], call_id: str) -> boo
     return False
 
 
+def shortened_reply(reply: str | None) -> str | None:
+    """The reply, cut to `MAX_REPLY_CHARS` with a note saying so."""
+    if reply is None or len(reply) <= MAX_REPLY_CHARS:
+        return reply
+    return (
+        reply[:MAX_REPLY_CHARS].rstrip()
+        + f"\n[truncated: the first {MAX_REPLY_CHARS} of {len(reply)} characters]"
+    )
+
+
 def connection(url: str, token: str) -> dict:
     return {
         "transport": "streamable_http",
@@ -334,13 +350,18 @@ async def run(
         flow.system(SYSTEM_PROMPT)
         human = HumanMessage(task)
         flow.message(human)
+        last_ai: AIMessage | None = None
         async for update in agent.astream({"messages": [human]}, stream_mode="updates"):
             for node in update.values():
                 for message in (node or {}).get("messages", []):
                     flow.message(message)
+                    if isinstance(message, AIMessage):
+                        last_ai = message
 
     if report.stop is None:
         report.stop = Stop.ENDED
+        if last_ai is not None and not last_ai.tool_calls:
+            report.final_reply = last_ai.text
     flow.outcome()
     return report
 
@@ -437,6 +458,19 @@ class Flow:
             lines.append(line)
             if r.trace_id:
                 lines.append(f"    trace_id: {r.trace_id}")
+        reply = shortened_reply(report.final_reply)
+        if reply is not None:
+            lines.append("final reply from the model:")
+            for text in reply.splitlines() or [""]:
+                wrapped = textwrap.wrap(
+                    text,
+                    WIDTH,
+                    initial_indent="  ",
+                    subsequent_indent="  ",
+                    break_long_words=False,
+                    break_on_hyphens=False,
+                )
+                lines.extend(wrapped or [""])
         for line in lines:
             print(line, file=self.out)
         self.out.flush()

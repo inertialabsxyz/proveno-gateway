@@ -37,7 +37,38 @@ ANVIL_TEST_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff8
 HOT_WEI=620000000000000000
 VAULT_WEI=380000000000000000
 
-REQUEST="rebalance to 60/40 if the price has moved more than 2%"
+# The task, as a user would give it: the model needs both addresses, and
+# nothing else tells it where the vault is. demo/agent's tests read it from
+# `run.sh --print-task`, so they test the task the demo sends.
+REQUEST="The hot wallet is $HOT and the vault is $VAULT. Rebalance them to 60/40 if ETH/USD has moved more than 2% in 24 hours."
+
+# with_final_reply <message> <agent result file>: the message, followed by the
+# model's final reply when the agent recorded one, so the reason a model
+# stopped is visible where the demo fails.
+with_final_reply() {
+    local reply=""
+    if [ -f "$2" ]; then
+        reply=$(jq -r '.final_reply // empty' "$2")
+    fi
+    if [ -n "$reply" ]; then
+        printf '%s; the model'"'"'s final reply was:\n%s' "$1" "$reply"
+    else
+        printf '%s' "$1"
+    fi
+}
+
+# Two entry points for demo/agent's tests, which run nothing else.
+case "${1:-}" in
+    --print-task)
+        printf '%s\n' "$REQUEST"
+        exit 0
+        ;;
+    --no-transfer-message)
+        with_final_reply "no run made a transfer" "${2:?a result file}"
+        printf '\n'
+        exit 0
+        ;;
+esac
 
 ANVIL_PID=""
 MARKET_PID=""
@@ -233,7 +264,8 @@ if [ -n "$AGENT_KEY" ]; then
     "$CLIENT" description | grep -B1 'wallet.transfer{'
 
     say "The agent's conversation, as it happens: the model reads the description, writes its own program and runs it"
-    run_agent "$LOG_DIR/agent-result.json" || fail "the agent did not complete its task"
+    run_agent "$LOG_DIR/agent-result.json" \
+        || fail "$(with_final_reply "the agent did not complete its task" "$LOG_DIR/agent-result.json")"
     # A task can take several runs, all in one session; every one has a trace.
     trace_ids=$(jq -r '.trace_ids[]' "$LOG_DIR/agent-result.json")
 else
@@ -266,7 +298,8 @@ tx_hashes=$(jq -r '.entries[]
     | select(.record.tool_name == "wallet.transfer" and .decision.type == "allowed")
     | .record.response_canonical | select(. != "") | fromjson | .tx_hash // empty' \
     "${trace_files[@]}")
-[ -n "$tx_hashes" ] || fail "no run made a transfer"
+[ -n "$tx_hashes" ] \
+    || fail "$(with_final_reply "no run made a transfer" "$LOG_DIR/agent-result.json")"
 
 say "The transaction on the chain"
 for tx_hash in $tx_hashes; do

@@ -77,7 +77,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
         epilog=(
             "Examples:\n"
-            '  demo-agent "rebalance to 60/40 if the price has moved more than 2%"\n'
+            '  demo-agent "$(../run.sh --print-task)"\n'
             "      (Anthropic; key in ANTHROPIC_API_KEY)\n"
             '  demo-agent --api openai --model qwen/qwen3-coder "..."\n'
             "      (OpenRouter; key in OPENROUTER_API_KEY)\n\n"
