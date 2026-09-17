@@ -572,12 +572,24 @@ fn scale_div_takes_a_multiplier_not_a_digit_count() {
     };
     assert_eq!(run(&program("10000")), LuaValue::Integer(203));
     assert_eq!(run(&program("4")), LuaValue::Integer(0));
+    // A fall truncates towards zero, where `//` would floor to -201.
+    let fall = run("local now = decimal.parse(\"2449.99\", 4)\n\
+         local past = decimal.parse(\"2500.0\", 4)\n\
+         return { div = math.scale_div(now - past, past, 10000),\n\
+                  floor = (now - past) * 10000 // past }");
+    assert_eq!(field(&fall, "div"), LuaValue::Integer(-200));
+    assert_eq!(field(&fall, "floor"), LuaValue::Integer(-201));
     let rules = dialect_rules();
     assert!(
         rules.contains("math.scale_div(now - past, past, 10000)"),
         "{rules}"
     );
     assert!(rules.contains("not a number of digits"), "{rules}");
+    assert!(
+        rules.contains("truncated towards zero, where `//`"),
+        "{rules}"
+    );
+    assert!(!rules.contains("a * multiplier // b"), "{rules}");
 }
 
 fn assert_contains(v: &LuaValue, needle: &str) {

@@ -89,8 +89,10 @@ before the program runs; a violation is returned as a line-numbered error.
   - string: `len`, `sub`, `find`, `find_literal`, `upper`, `lower`, `rep`,
     `byte`, `char`, `format`.
   - math: `abs`, `min`, `max`, `scale_div(a, b, multiplier)`
-    (`a * multiplier // b`, truncated towards zero; `multiplier` is a plain
-    factor such as 100 or 10000, not a digit count), `maxinteger`, `mininteger`.
+    (`a * multiplier` divided by `b`, truncated towards zero, where `//`
+    floors: a -2.0004% move is -200 basis points, not -201; `multiplier` is a
+    plain factor such as 100 or 10000, not a digit count), `maxinteger`,
+    `mininteger`.
   - table: `insert`, `remove`, `concat`, `sort`, `move`.
   - json: `encode`, `decode`, `decode_strings`. `decode` rejects a number with
     a fractional part or an exponent; `decode_strings` returns every number as
