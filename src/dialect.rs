@@ -6,7 +6,7 @@ use proveno::compiler::{CompileError, compile, proto::CompiledProgram};
 use proveno::parser::{lexer::ParseError, parse};
 use serde::{Deserialize, Serialize};
 
-pub const DIALECT_VERSION: &str = "4";
+pub const DIALECT_VERSION: &str = "5";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, thiserror::Error)]
 #[error("line {line}: {message}")]
@@ -30,7 +30,7 @@ pub struct LintError {
 /// pins them failing, so the test breaks when a core release fixes them, and
 /// the warning comes out then.
 const DIALECT_RULES: &str = "\
-# Lua dialect (version 4)
+# Lua dialect (version 5)
 
 Programs are a restricted, deterministic Lua. The rules below are enforced
 before the program runs; a violation is returned as a line-numbered error.
@@ -50,8 +50,11 @@ before the program runs; a violation is returned as a line-numbered error.
   at a scale at least as large as the digits the tool returns, and narrow with
   `decimal.rescale(value, from, to)`, which fails rather than drop a non-zero
   digit. `decimal` functions never divide or round; `math.scale_div` divides
-  and truncates. Scales run from 0 to 18, and exponents such as \"1e3\" are
-  refused; a very large or very small number from a tool can arrive in that
+  and truncates. **Its third argument is a multiplier, not a number of digits**,
+  unlike `scale` in the `decimal` functions: a percentage move in basis points is
+  `math.scale_div(now - past, past, 10000)`, and passing `4` there multiplies by
+  4, which truncates a 2% move to 0. Scales run from 0 to 18, and exponents
+  such as \"1e3\" are refused; a very large or very small number from a tool can arrive in that
   form, such as \"1e-7\". A field the Tool API types
   `integer|string(decimal)` can arrive as either, and `decimal.parse` takes
   only a string, so write `decimal.parse(tostring(v), 2)`. `tonumber` parses whole numbers only: it
@@ -85,8 +88,11 @@ before the program runs; a violation is returned as a line-numbered error.
   `string`, `math`, `table`, `json` or `decimal` is nil, and calling it fails.
   - string: `len`, `sub`, `find`, `find_literal`, `upper`, `lower`, `rep`,
     `byte`, `char`, `format`.
-  - math: `abs`, `min`, `max`, `scale_div(a, b, scale)` (`a * scale / b`,
-    truncated towards zero), `maxinteger`, `mininteger`.
+  - math: `abs`, `min`, `max`, `scale_div(a, b, multiplier)`
+    (`a * multiplier` divided by `b`, truncated towards zero, where `//`
+    floors: a -2.0004% move is -200 basis points, not -201; `multiplier` is a
+    plain factor such as 100 or 10000, not a digit count), `maxinteger`,
+    `mininteger`.
   - table: `insert`, `remove`, `concat`, `sort`, `move`.
   - json: `encode`, `decode`, `decode_strings`. `decode` rejects a number with
     a fractional part or an exponent; `decode_strings` returns every number as
