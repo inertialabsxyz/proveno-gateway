@@ -3,7 +3,10 @@
 # The proveno-gateway pilot demo: the four steps of spec section 5.
 #
 # 1. An agent does real work: a Lua program reads a price and two balances and
-#    makes a real signed transfer, recorded in a signed trace.
+#    makes a real signed transfer, recorded in a signed trace. With a model API
+#    key in the environment, a LangGraph agent (demo/agent) writes that program;
+#    without one, the script runs rebalance.lua, a program an agent wrote
+#    earlier.
 # 2. That run replays bit-for-bit with the chain and both tool servers stopped.
 # 3. A tighter policy refuses the transfer at the call, and records the refusal.
 # 4. A tool off the allow-list is absent from the generated API and refused at
@@ -58,6 +61,31 @@ fail() {
 for tool in anvil cast cargo jq; do
     command -v "$tool" > /dev/null 2>&1 || fail "\`$tool\` is not on PATH"
 done
+
+# ── the model, if there is a key ──────────────────────────────────────────────
+
+# The same configuration demo-agent reads: DEMO_AGENT_API picks `anthropic` or
+# `openai` (any OpenAI-compatible endpoint, OpenRouter by default), and
+# DEMO_AGENT_API_KEY_VAR names the variable holding the key. DEMO_AGENT_MODEL
+# and DEMO_AGENT_BASE_URL pass through to demo-agent untouched.
+AGENT_API=${DEMO_AGENT_API:-anthropic}
+case "$AGENT_API" in
+    anthropic) AGENT_KEY_VAR=${DEMO_AGENT_API_KEY_VAR:-ANTHROPIC_API_KEY} ;;
+    openai) AGENT_KEY_VAR=${DEMO_AGENT_API_KEY_VAR:-OPENROUTER_API_KEY} ;;
+    *) fail "DEMO_AGENT_API must be \`anthropic\` or \`openai\`, not \`$AGENT_API\`" ;;
+esac
+[[ "$AGENT_KEY_VAR" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
+    || fail "DEMO_AGENT_API_KEY_VAR is not a variable name: \`$AGENT_KEY_VAR\`"
+AGENT_KEY=${!AGENT_KEY_VAR:-}
+
+# The key goes to demo-agent and nothing else: not to cargo, anvil, demo-market
+# or the gateway. Un-exporting keeps the value in this shell only; `run_agent`
+# exports it inside the agent's own subshell, so it is never an argument.
+export -n ANTHROPIC_API_KEY OPENROUTER_API_KEY "$AGENT_KEY_VAR"
+
+if [ -n "$AGENT_KEY" ]; then
+    command -v uv > /dev/null 2>&1 || fail "$AGENT_KEY_VAR is set, so step 1 uses demo/agent, which needs \`uv\` on PATH"
+fi
 
 LOG_DIR=$(mktemp -d)
 
@@ -150,6 +178,19 @@ start_world() {
     start_gateway
 }
 
+# run_agent <result file>: the model writes and runs the program. demo-agent
+# prints every message as it happens (the system prompt, the task, the model's
+# tool calls with their programs, each tool result) and the trace_id, and
+# writes the result to the file for the steps that follow.
+run_agent() {
+    (
+        export "$AGENT_KEY_VAR=$AGENT_KEY"
+        exec uv run --quiet --locked --project agent demo-agent \
+            --api "$AGENT_API" --api-key-var "$AGENT_KEY_VAR" \
+            --url "http://127.0.0.1:$GATEWAY_PORT/mcp" --result-file "$1" "$REQUEST"
+    )
+}
+
 trace_file() { echo "traces/traces/$1.json"; }
 
 # ── secrets, generated per run ────────────────────────────────────────────────
@@ -184,25 +225,58 @@ banner "Step 1: an agent does real work, and the run is recorded"
 start_world
 
 say "The task: $REQUEST"
-say "The program the agent wrote (rebalance.lua)"
-cat rebalance.lua
 
-say "The tool API the gateway generated for this principal, in the \`execute\` description"
-"$CLIENT" description | grep -B1 'wallet.transfer{'
+if [ -n "$AGENT_KEY" ]; then
+    say "Step 1 path: $AGENT_KEY_VAR is set, so a live model writes the program (demo/agent, $AGENT_API API)"
 
-say "Executing it through the gateway"
-result=$("$CLIENT" execute rebalance.lua --request "$REQUEST")
-echo "$result"
+    say "The tool API the gateway generated for this principal, in the \`execute\` description"
+    "$CLIENT" description | grep -B1 'wallet.transfer{'
 
-trace_id=$(printf '%s' "$result" | jq -r .trace_id)
-tx_hash=$(printf '%s' "$result" | jq -r .result.tx_hash)
-[ "$tx_hash" != "null" ] || fail "the program made no transfer"
+    say "The agent's conversation, as it happens: the model reads the description, writes its own program and runs it"
+    run_agent "$LOG_DIR/agent-result.json" || fail "the agent did not complete its task"
+    # A task can take several runs, all in one session; every one has a trace.
+    trace_ids=$(jq -r '.trace_ids[]' "$LOG_DIR/agent-result.json")
+else
+    say "Step 1 path: $AGENT_KEY_VAR is empty or unset, so no model runs; using the recorded program rebalance.lua"
+
+    say "A program an agent wrote earlier (rebalance.lua)"
+    cat rebalance.lua
+
+    say "The tool API the gateway generated for this principal, in the \`execute\` description"
+    "$CLIENT" description | grep -B1 'wallet.transfer{'
+
+    say "Executing it through the gateway"
+    result=$("$CLIENT" execute rebalance.lua --request "$REQUEST")
+    echo "$result"
+    trace_ids=$(printf '%s' "$result" | jq -r .trace_id)
+fi
+
+trace_files=()
+for trace_id in $trace_ids; do
+    trace_files+=("$(trace_file "$trace_id")")
+done
+[ "${#trace_files[@]}" -gt 0 ] || fail "no run was recorded"
+
+say "The run's traces"
+printf '%s\n' $trace_ids
+
+# The transfer is read from the traces, not from a program's return value,
+# whose shape a model chooses, and it may be in any of the task's runs.
+tx_hashes=$(jq -r '.entries[]
+    | select(.record.tool_name == "wallet.transfer" and .decision.type == "allowed")
+    | .record.response_canonical | select(. != "") | fromjson | .tx_hash // empty' \
+    "${trace_files[@]}")
+[ -n "$tx_hashes" ] || fail "no run made a transfer"
 
 say "The transaction on the chain"
-cast tx "$tx_hash" --rpc-url "$RPC"
+for tx_hash in $tx_hashes; do
+    cast tx "$tx_hash" --rpc-url "$RPC"
+done
 
-say "The signed trace"
-jq . "$(trace_file "$trace_id")"
+for trace_id in $trace_ids; do
+    say "The signed trace $trace_id"
+    jq . "$(trace_file "$trace_id")"
+done
 
 say "Each call's policy decision and provenance tag"
 jq -r '
@@ -211,17 +285,21 @@ jq -r '
         elif .type == "signed" then "signed(\(.by), \(.sig))"
         elif .type == "notarized" then "notarized(\(.scheme), \(.reference))"
         else .type end;
-    .entries[] | "\(.record.seq)  \(.record.tool_name)  \(.decision.type)  \(.provenance | tag)"' \
-    "$(trace_file "$trace_id")"
+    "\(.header.trace_id)",
+    (.entries[] | "  \(.record.seq)  \(.record.tool_name)  \(.decision.type)  \(.provenance | tag)")' \
+    "${trace_files[@]}"
 echo
 echo "A tag is the tool server's own claim of where its answer came from, sealed into the signed trace; the gateway has not checked it."
 
-jq -e '[.entries[] | select(.record.tool_name | startswith("wallet."))]
+# A call the policy refused was never dispatched, so it has no provenance.
+jq -s -e '[.[].entries[] | select(.decision.type == "allowed")
+    | select(.record.tool_name | startswith("wallet."))]
     | length > 0 and all(.provenance.type == "onchain")' \
-    "$(trace_file "$trace_id")" > /dev/null || fail "a wallet call is not tagged onchain"
-jq -e '[.entries[] | select(.record.tool_name | startswith("market."))]
+    "${trace_files[@]}" > /dev/null || fail "a wallet call is not tagged onchain"
+jq -s -e '[.[].entries[] | select(.decision.type == "allowed")
+    | select(.record.tool_name | startswith("market."))]
     | length > 0 and all(.provenance.type == "unsigned")' \
-    "$(trace_file "$trace_id")" > /dev/null || fail "a market call is not tagged unsigned"
+    "${trace_files[@]}" > /dev/null || fail "a market call is not tagged unsigned"
 
 # ── step 2 ────────────────────────────────────────────────────────────────────
 
@@ -231,8 +309,10 @@ stop_world
 say "anvil, demo-market and demo-wallet are stopped"
 pgrep -fl 'anvil|demo-' || echo "(no chain, no tool servers)"
 
-say "Replaying $trace_id with no network access"
-"$GATEWAY" replay --config gateway.toml "$trace_id"
+for trace_id in $trace_ids; do
+    say "Replaying $trace_id with no network access"
+    "$GATEWAY" replay --config gateway.toml "$trace_id"
+done
 
 # ── step 3 ────────────────────────────────────────────────────────────────────
 
@@ -249,7 +329,11 @@ cat policy.toml
 
 start_world
 
-say "Running the same program again"
+if [ -n "$AGENT_KEY" ]; then
+    say "Running rebalance.lua, a program an agent wrote earlier, so this step is the same with or without a model"
+else
+    say "Running the same program again"
+fi
 denied=$("$CLIENT" execute rebalance.lua --request "$REQUEST")
 echo "$denied"
 
