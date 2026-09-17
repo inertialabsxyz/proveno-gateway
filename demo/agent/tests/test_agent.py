@@ -117,6 +117,20 @@ def test_a_second_execute_in_the_same_reply_does_not_run_after_a_failed_run(worl
     assert "not run: the agent has already stopped" in out
 
 
+def test_an_execute_call_the_gateway_rejects_stops_the_agent(world):
+    rejected = AIMessage(
+        content="", tool_calls=[{"name": "execute", "args": {"prog": "x"}, "id": "call_bad"}]
+    )
+    model = ScriptedChatModel(responses=[rejected, execute(REBALANCE)], received=[])
+    report, out, vault_gain = agent_run(world, model)
+
+    assert report.outcome is Outcome.UNEXPECTED, out
+    assert len(model.received) == 1
+    assert vault_gain == 0
+    assert "invalid arguments" in report.error
+    assert "=> not a lint error; the agent stops, no retry" in out
+
+
 def test_prints_the_message_flow_in_order_as_the_model_receives_it(world):
     model = ScriptedChatModel(
         responses=[execute(NOT_IN_THE_DIALECT), execute(REBALANCE)], received=[]

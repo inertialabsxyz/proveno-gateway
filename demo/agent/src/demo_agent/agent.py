@@ -34,6 +34,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from langchain_mcp_adapters.interceptors import MCPToolCallRequest
 from langchain_mcp_adapters.tools import load_mcp_tools
+from mcp.shared.exceptions import McpError
 from mcp.types import CallToolResult
 
 SERVER = "proveno-gateway"
@@ -146,7 +147,18 @@ class ExecuteGuard(AgentMiddleware):
             # The task is recorded in the trace by the agent, not left to the
             # model to pass along.
             args = {**call["args"], "request": self.task}
-            message = await handler(request.override(tool_call={**call, "args": args}))
+            try:
+                message = await handler(request.override(tool_call={**call, "args": args}))
+            except McpError as e:
+                # A protocol error, such as arguments the gateway rejects, is
+                # not a lint error: stop with an outcome rather than a crash.
+                self.stopped = True
+                report.outcome = Outcome.UNEXPECTED
+                report.error = str(e)
+                report.verdicts[call["id"]] = "not a lint error; the agent stops, no retry"
+                return ToolMessage(
+                    str(e), tool_call_id=call["id"], name=call["name"], status="error"
+                )
             result = self.raw.results.pop("execute")
             outcome = classify(result)
             report.outcome = outcome
