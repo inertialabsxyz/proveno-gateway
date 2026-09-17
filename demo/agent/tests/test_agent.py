@@ -317,13 +317,26 @@ def test_quiet_prints_only_the_outcome(world):
 
 
 def test_the_model_is_given_exactly_the_task_run_sh_sends(world):
-    model = ScriptedChatModel(responses=[reply("Nothing to do.")], received=[])
-    agent_run(world, model)
+    model = ScriptedChatModel(responses=[execute(READ_ONLY), reply("Nothing to do.")], received=[])
+    report, out, _ = agent_run(world, model)
 
     [human] = [m for m in model.received[0] if isinstance(m, HumanMessage)]
     assert human.text == run_sh("--print-task").rstrip("\n")
     # The task names the two accounts this world funds, the ones run.sh funds.
     assert conformance.HOT in human.text and conformance.VAULT in human.text
+    # The trace records the full task as the request.
+    assert trace(world, report.trace_ids[0])["header"]["request"] == human.text, out
+
+
+def test_run_sh_sends_the_task_it_prints_everywhere_it_sends_one():
+    script = (Path(__file__).resolve().parents[2] / "run.sh").read_text()
+    assert script.count("REQUEST=") == 1
+    # The agent's task argument and every `demo-client execute --request`.
+    assert '--result-file "$1" "$REQUEST"' in script
+    requests = [
+        line.split("--request", 1)[1].strip() for line in script.splitlines() if "--request" in line
+    ]
+    assert requests and all(r.startswith('"$REQUEST"') for r in requests), requests
 
 
 def test_a_model_that_reads_then_stops_has_its_reply_in_the_summary(world, tmp_path):
