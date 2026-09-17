@@ -113,6 +113,7 @@ def test_a_second_execute_in_the_same_reply_does_not_run_after_a_failed_run(worl
     assert report.attempts == 1
     assert len(model.received) == 1
     assert vault_gain == 5
+    assert "TOOL, error" not in out
     assert "not run: the agent has already stopped" in out
 
 

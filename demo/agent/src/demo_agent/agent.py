@@ -138,7 +138,9 @@ class ExecuteGuard(AgentMiddleware):
             if self.stopped:
                 reason = "not run: the agent has already stopped, and runs no further programs"
                 report.verdicts[call["id"]] = reason
-                return ToolMessage(reason, tool_call_id=call["id"], status="error")
+                return ToolMessage(
+                    reason, tool_call_id=call["id"], name=call["name"], status="error"
+                )
 
             report.attempts += 1
             # The task is recorded in the trace by the agent, not left to the
