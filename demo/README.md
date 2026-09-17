@@ -172,11 +172,10 @@ and runs a check before every model call:
 
 Only the first `execute` call of a reply runs: any other in the same reply is
 answered `not run` without reaching the gateway, because the model wrote it
-before seeing the first one's result. The
-agent exits 0 only when the model ended the task itself after at least one
-successful run. The flags `--api`, `--model`,
-`--base-url` and `--api-key-var` match `conformance/` and default to the
-`DEMO_AGENT_*` variables above.
+before seeing the first one's result. The agent exits 0 only when the model
+ended the task itself after at least one successful run. The flags `--api`,
+`--model`, `--base-url` and `--api-key-var` match `conformance/` and default to
+the `DEMO_AGENT_*` variables above.
 
 **The model's program varies from run to run.** Two runs of the same model can
 write different programs, name the result's fields differently, or need a
