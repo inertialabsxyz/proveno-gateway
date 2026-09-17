@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -68,9 +69,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="demo-agent",
         description=(
-            "Give a model a task and the proveno-gateway's MCP tools. The model reads the "
-            "`execute` description, writes a Lua program and runs it. A lint error goes back "
-            f"to the model, up to {MAX_ATTEMPTS} attempts; a failed run is never retried."
+            "Give a model a task and the proveno-gateway's MCP tools, in LangChain's prebuilt "
+            "agent graph. The model reads the `execute` description, writes a Lua program and "
+            f"runs it. A lint error goes back to the model, up to {MAX_ATTEMPTS} attempts; a "
+            "failed run is never retried. Prints every message as it happens."
         ),
         epilog=(
             "Examples:\n"
@@ -110,6 +112,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-tokens", type=int, default=16000, help="per reply; default 16000")
     parser.add_argument("--url", default=DEFAULT_URL, help=f"gateway MCP endpoint; {DEFAULT_URL}")
     parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="print only the outcome and trace_id, not the message flow",
+    )
+    parser.add_argument(
         "--result-file",
         type=Path,
         help="write the successful run's structured result here, as JSON",
@@ -129,8 +136,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 2
 
-    print(f"Model: {args.model or DEFAULT_MODELS[args.api]} via {args.api} API")
-    report = asyncio.run(run(model, args.task, args.url, token, sys.stdout))
+    # The gateway answers the session DELETE on close with 202, which the MCP
+    # client logs as a failed termination; the session has ended either way.
+    logging.getLogger("mcp.client.streamable_http").setLevel(logging.ERROR)
+    if not args.quiet:
+        print(f"[model {args.model or DEFAULT_MODELS[args.api]} via the {args.api} API]")
+    report = asyncio.run(run(model, args.task, args.url, token, sys.stdout, quiet=args.quiet))
     if report.outcome is not Outcome.OK:
         print(f"demo-agent: {report.error or 'no successful run'}", file=sys.stderr)
         return 1
