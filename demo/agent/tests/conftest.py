@@ -8,6 +8,7 @@ import importlib.util
 import json
 import shutil
 import socket
+import subprocess
 import sys
 from pathlib import Path
 
@@ -32,6 +33,19 @@ def _load_conformance():
 
 
 conformance = _load_conformance()
+
+RUN_SH = DEMO / "run.sh"
+
+
+def run_sh(*args: str) -> str:
+    """`demo/run.sh` in one of its entry points that runs nothing else."""
+    return subprocess.run(
+        ["bash", str(RUN_SH), *args], capture_output=True, text=True, check=True
+    ).stdout
+
+
+# The exact task `run.sh` gives the agent. The tests use nothing else.
+TASK = run_sh("--print-task").rstrip("\n")
 
 
 def _free_port() -> int:
