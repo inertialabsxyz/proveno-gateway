@@ -4,7 +4,7 @@
 #
 # 1. An agent does real work: a Lua program reads a price and two balances and
 #    makes a real signed transfer, recorded in a signed trace. With a model API
-#    key in the environment, a LangChain agent (demo/agent) writes that program;
+#    key in the environment, a LangGraph agent (demo/agent) writes that program;
 #    without one, the script runs rebalance.lua, a program an agent wrote
 #    earlier.
 # 2. That run replays bit-for-bit with the chain and both tool servers stopped.
@@ -179,8 +179,9 @@ start_world() {
 }
 
 # run_agent <result file>: the model writes and runs the program. demo-agent
-# prints the program, the tool result and the trace_id, and writes the result
-# to the file for the steps that follow.
+# prints every message as it happens (the system prompt, the task, the model's
+# tool calls with their programs, each tool result) and the trace_id, and
+# writes the result to the file for the steps that follow.
 run_agent() {
     (
         export "$AGENT_KEY_VAR=$AGENT_KEY"
@@ -231,7 +232,7 @@ if [ -n "$AGENT_KEY" ]; then
     say "The tool API the gateway generated for this principal, in the \`execute\` description"
     "$CLIENT" description | grep -B1 'wallet.transfer{'
 
-    say "The agent reads the description, writes its own program and runs it"
+    say "The agent's conversation, as it happens: the model reads the description, writes its own program and runs it"
     run_agent "$LOG_DIR/agent-result.json" || fail "the agent did not complete a successful run"
     result=$(cat "$LOG_DIR/agent-result.json")
 else

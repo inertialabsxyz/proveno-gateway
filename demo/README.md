@@ -4,7 +4,7 @@ This is the demo of spec section 5: an agent rebalances a wallet through the
 gateway, the run replays with the world switched off, and a policy change is
 enforced at the call.
 
-With a model API key in the environment, step 1 is a LangChain agent: a model
+With a model API key in the environment, step 1 is a LangGraph agent: a model
 reads the gateway's generated `execute` description and writes its own program.
 Without one, step 1 runs `rebalance.lua`, a program an agent wrote earlier, and
 the whole demo runs offline.
@@ -16,7 +16,7 @@ are real signed transactions; the chain is not.
 
 ```mermaid
 flowchart TB
-    D["demo-agent<br/>LangChain and a model, with a key"]
+    D["demo-agent<br/>LangGraph and a model, with a key"]
     C["demo-client<br/>runs the recorded program, without a key"]
     G["proveno-gateway serve<br/>127.0.0.1:7777/mcp"]
     W["demo-wallet<br/>stdio child of the gateway"]
@@ -111,8 +111,10 @@ DEMO_AGENT_API=openai DEMO_AGENT_BASE_URL=http://localhost:11434/v1 \
 ## The agent
 
 `agent/` is `demo-agent`, a small Python project managed with uv, separate from
-every Cargo workspace. It uses LangChain's chat model interface and
-`langchain-mcp-adapters`, with the gateway as its only MCP server, so it is the
+every Cargo workspace. It is LangChain's prebuilt agent graph,
+`langchain.agents.create_agent` (the LangGraph agent that replaced
+`langgraph.prebuilt.create_react_agent` in the 1.x releases), with
+`langchain-mcp-adapters` and the gateway as its only MCP server. That is the
 kind of agent stack a team already runs, pointed at the gateway unchanged.
 
 ```bash
@@ -123,22 +125,37 @@ DEMO_AGENT_TOKEN=... uv run demo-agent "rebalance to 60/40 if the price has move
 It connects to `http://127.0.0.1:7777/mcp` (`--url`) with the bearer token from
 `DEMO_AGENT_TOKEN`, loads `execute` and `check`, and gives the model a short
 system prompt and the task. Everything about the dialect and the tool API comes
-from `execute`'s generated description. It prints, in order, each program the
-model passes to `execute`, the gateway's answer, and the `trace_id`. The task
-itself is recorded in the trace as the `request`.
+from `execute`'s generated description. The task itself is recorded in the
+trace as the `request`, set by the agent rather than the model.
 
-What happens after `execute` is decided by the agent's code, from the raw MCP
-result, not left to the model:
+It streams the conversation from the graph and prints every message as it
+happens, labelled by role:
+
+- `SYSTEM`: the system prompt, at most three lines, with its length;
+- `HUMAN`: the task;
+- `AI`: the model's text, and each tool call with its name, its arguments and
+  its `program` as a Lua block;
+- `TOOL`: the result as the model receives it, including the whole lint error
+  or failed-run text, followed by a `=>` line saying what the agent made of it.
+
+The output is wrapped for a terminal about 100 columns wide. It ends with the
+outcome and the `trace_id`. `--quiet` prints only those last lines.
+
+What happens after `execute` is decided in the graph, from the raw MCP result,
+not left to the model. A middleware, `ExecuteGuard`, wraps every `execute` call
+and runs a check before every model call:
 
 - **A lint error** is a tool error with the text `line N: message` and no
   structured result. Nothing ran, so the error goes back to the model and it
   tries again, up to three attempts.
 - **A failed run** is a tool error that carries a structured result with a
   `trace_id`: the program started, and its text says its tool calls have
-  already happened. The agent prints it and stops. It never retries a failed
-  run, because a second run could transfer twice.
-- **A successful run** ends the loop; `--result-file` writes its result for
-  `run.sh`.
+  already happened. The graph ends before the model is asked again, and
+  any further `execute` call in the same reply is answered `not run` without
+  reaching the gateway. A failed run is never retried, because a second run
+  could transfer twice.
+- **A successful run** ends the graph the same way; `--result-file` writes its
+  result for `run.sh`.
 
 Any other error is treated like a failed run. The flags `--api`, `--model`,
 `--base-url` and `--api-key-var` match `conformance/` and default to the
@@ -160,8 +177,15 @@ Its own lint and tests, not part of the gateway's `make check`:
 
 The tests do not call a model. They drive the agent with a scripted LangChain
 fake chat model against a real gateway, Anvil and `demo-market` on free ports:
-a lint error fed back and a corrected program that transfers, a failed run that
-is not retried, three lint errors and a stop, and the negotiated MCP protocol.
+
+- a lint error goes back to the model, and the corrected program transfers;
+- a failed run is not retried, whether the second `execute` comes in the next
+  reply or in the same one;
+- after three lint errors the agent stops;
+- `check` calls do not count as attempts;
+- the printed flow is in order and shows the tool text the model received;
+- `--quiet` prints only the outcome;
+- the negotiated MCP protocol is `2025-11-25`.
 
 ## What each step proves
 
@@ -170,12 +194,13 @@ work this way, a run can be reproduced exactly from its record, and a policy
 change is enforced at the call with the refusal in the record.
 
 **Step 1: an agent can do real work.** The task is "rebalance to 60/40 if the
-price has moved more than 2%". With a key, the model writes the program and the
-step shows it, each lint round trip, the result and the `trace_id`; what the
-program does is the model's. Without a key, `rebalance.lua` runs: it reads the
-ETH/USD price and the two balances, works out that the price moved 203 basis points and that the hot
-wallet is 20 milli-ETH over its 60% target, and transfers 20 milli-ETH to the
-vault. The step prints the generated `wallet.transfer` signature from the tool
+price has moved more than 2%". With a key, the model writes the program, and
+the step shows the conversation as it happens: the task, the model's program,
+each lint round trip, the tool results and the `trace_id`. What that program
+does is the model's. Without a key, `rebalance.lua` runs: it reads the ETH/USD
+price and the two balances, works out that the price moved 203 basis points and
+that the hot wallet is 20 milli-ETH over its 60% target, and transfers 20
+milli-ETH to the vault. The step prints the generated `wallet.transfer` signature from the tool
 description the model was given, the program's result, the transaction as `cast
 tx` sees it, and the signed trace: header, every call with its policy decision
 and provenance tag, and a footer with the output, gas and memory. It then lists
@@ -211,7 +236,7 @@ trace.
 |---|---|
 | `wallet/` | `demo-wallet`, a stdio MCP server that signs real transactions with `alloy` and reports `onchain` provenance |
 | `market/` | `demo-market`, an http MCP server serving prices from `prices.json` |
-| `agent/` | `demo-agent`, a LangChain agent: a model writes step 1's program when there is a key |
+| `agent/` | `demo-agent`, a LangGraph agent: a model writes step 1's program when there is a key |
 | `client/` | `demo-client`, a tiny MCP client that runs a given program; step 1 without a key, and steps 3 and 4 |
 | `gateway.toml` | The gateway config: two downstreams, the policy file, the trace store |
 | `policy.toml` | The allow-list and `amount_max`; `run.sh` edits and restores it |
