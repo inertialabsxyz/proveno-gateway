@@ -119,8 +119,18 @@ kind of agent stack a team already runs, pointed at the gateway unchanged.
 
 ```bash
 cd demo/agent
-DEMO_AGENT_TOKEN=... uv run demo-agent "rebalance to 60/40 if the price has moved more than 2%"
+DEMO_AGENT_TOKEN=... uv run demo-agent "$(../run.sh --print-task)"
 ```
+
+The task names both wallets, as a user would: `run.sh --print-task` prints the
+exact text step 1 sends, which is
+
+> The hot wallet is 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266 and the vault is
+> 0x70997970C51812dc3A010C7d01b50e0d17dc79C8. Rebalance them to 60/40 if ETH/USD
+> has moved more than 2% in 24 hours.
+
+A bare "rebalance to 60/40" is not enough: nothing else tells the model where
+the vault is, so a careful model reads what it can and stops.
 
 It connects to `http://127.0.0.1:7777/mcp` (`--url`) with the bearer token from
 `DEMO_AGENT_TOKEN`, loads `execute` and `check`, and gives the model a short
@@ -146,8 +156,12 @@ happens, labelled by role:
 
 The output is wrapped for a terminal about 100 columns wide. It ends with the
 outcome, why the agent stopped, the session, and every run: its attempt number,
-its lint error or result, and its `trace_id`. `--quiet` prints only that
-summary. `--result-file` writes the same as JSON, which `run.sh` reads.
+its lint error or result, and its `trace_id`. When the model ended the task by
+replying without a tool call, the summary ends with that reply, cut to 1200
+characters with a note if it is longer, so the reason a model stopped is
+visible without scrolling back. `--quiet` prints only that summary.
+`--result-file` writes the same as JSON, which `run.sh` reads: if no run made a
+transfer, step 1 fails with the model's final reply in the message.
 
 What happens after `execute` is decided in the graph, from the raw MCP result,
 not left to the model. A middleware, `ExecuteGuard`, wraps every `execute` call
@@ -207,6 +221,11 @@ fake chat model against a real gateway, Anvil and `demo-market` on free ports:
 - three lint errors in a row stop the agent, and a successful run resets the
   count;
 - `check` calls do not count as runs;
+- the model is given exactly the task `run.sh --print-task` prints, which names
+  the two accounts the test world funds;
+- a model that reads and then replies without transferring has that reply in
+  the summary, in the result file, and in `run.sh`'s "no run made a transfer"
+  message;
 - the printed flow is in order and shows the tool text the model received;
 - `--quiet` prints only the outcome;
 - the negotiated MCP protocol is `2025-11-25`.
@@ -217,24 +236,24 @@ The prototype has to show three things (spec section 1): an agent can do real
 work this way, a run can be reproduced exactly from its record, and a policy
 change is enforced at the call with the refusal in the record.
 
-**Step 1: an agent can do real work.** The task is "rebalance to 60/40 if the
-price has moved more than 2%". With a key, the model writes the programs, and
-the step shows the conversation as it happens: the task, each program the model
-writes, each lint round trip, the tool results and every run's `trace_id`. What
-those programs do is the model's, and it may split the task across several runs.
-Without a key, `rebalance.lua` runs: it reads the ETH/USD price and the two
-balances, works out that the price moved 203 basis points and that the hot
-wallet is 20 milli-ETH over its 60% target, and transfers 20 milli-ETH to the
-vault. The step prints the generated `wallet.transfer` signature from the tool
-description the model was given, each result, the transaction as `cast tx` sees
-it, and each signed trace: header, every call with its policy decision and
-provenance tag, and a footer with the output, gas and memory. It then lists each
-call's decision and tag: the wallet's calls are
-`onchain(eip155:31337, block, reference)`, with the block hash for a balance
-read and the transaction hash for the transfer, and the price read is
-`unsigned`, because `demo-market` reports nothing. The tag is `demo-wallet`'s
-own claim, bound into the signed trace; the gateway does not check it against
-the chain.
+**Step 1: an agent can do real work.** The task is "rebalance the hot wallet and
+the vault to 60/40 if ETH/USD has moved more than 2% in 24 hours", naming both
+addresses. With a key, the model writes the programs, and the step shows the
+conversation as it happens: the task, each program the model writes, each lint
+round trip, the tool results and every run's `trace_id`. What those programs do
+is the model's, and it may split the task across several runs. Without a key,
+`rebalance.lua` runs: it reads the ETH/USD price and the two balances, works out
+that the price moved 203 basis points and that the hot wallet is 20 milli-ETH
+over its 60% target, and transfers 20 milli-ETH to the vault. The step prints
+the generated `wallet.transfer` signature from the tool description the model
+was given, each result, the transaction as `cast tx` sees it, and each signed
+trace: header, every call with its policy decision and provenance tag, and a
+footer with the output, gas and memory. It then lists each call's decision and
+tag: the wallet's calls are `onchain(eip155:31337, block, reference)`, with the
+block hash for a balance read and the transaction hash for the transfer, and the
+price read is `unsigned`, because `demo-market` reports nothing. The tag is
+`demo-wallet`'s own claim, bound into the signed trace; the gateway does not
+check it against the chain.
 
 **Step 2: a run can be reproduced exactly from its record.** The chain, the
 price server and the wallet server are stopped, and `proveno-gateway replay`
@@ -345,8 +364,8 @@ claude mcp add --transport http proveno-gateway http://127.0.0.1:7777/mcp \
     --header "Authorization: Bearer $DEMO_AGENT_TOKEN"
 ```
 
-Ask it to rebalance to 60/40 if the price has moved more than 2%. It will read
-the dialect and the tool API from `execute`'s description, write its own
+Give it the task from `./run.sh --print-task`, which names both wallets. It will
+read the dialect and the tool API from `execute`'s description, write its own
 program, and run it. `proveno://lua-guide` is available as a resource and as a
 prompt. Keep the gateway on localhost: the MCP server rejects requests addressed
 to anything else.
