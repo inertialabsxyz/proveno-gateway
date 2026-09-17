@@ -212,7 +212,23 @@ def test_a_second_execute_in_the_same_reply_does_not_run_after_a_failed_run(worl
     assert len(model.received) == 1
     assert vault_gain == 5
     assert "TOOL, error" not in out
-    assert "not run: the agent has stopped, because a run failed" in out
+    assert "not run: only the first `execute` of a reply runs" in out
+
+
+def test_a_second_execute_in_the_same_reply_is_refused_after_a_successful_run(world):
+    # The model has not seen the first run's result, so the second is not sent.
+    first, second = execute(TRANSFER_5), execute(TRANSFER_5)
+    both = AIMessage(content="", tool_calls=first.tool_calls + second.tool_calls)
+    model = ScriptedChatModel(responses=[both, reply("Done.")], received=[])
+    report, out, vault_gain = agent_run(world, model)
+
+    assert report.stop is Stop.ENDED and report.succeeded, out
+    assert outcomes(report) == [Outcome.OK]
+    assert vault_gain == 5
+    assert len(model.received) == 2
+    refused = model.received[1][-1]
+    assert isinstance(refused, ToolMessage) and refused.tool_call_id == second.tool_calls[0]["id"]
+    assert refused.text.startswith("not run: only the first `execute` of a reply runs"), out
 
 
 def test_an_execute_call_the_gateway_rejects_stops_the_agent(world):

@@ -165,9 +165,11 @@ class ExecuteGuard(AgentMiddleware):
 
     `awrap_tool_call` runs `execute` calls one at a time, sets `request` and
     `session`, classifies the raw result, and refuses to run anything once the
-    agent has stopped or the successful-run cap is reached. `abefore_model`
-    ends the graph before the model is asked again once the agent has stopped,
-    so a model that wants another go after a failed run never gets it."""
+    agent has stopped or the successful-run cap is reached, or any `execute`
+    after the first in one reply, which the model wrote without seeing the
+    first one's result. `abefore_model` ends the graph before the model is
+    asked again once the agent has stopped, so a model that wants another go
+    after a failed run never gets it."""
 
     def __init__(
         self,
@@ -215,6 +217,18 @@ class ExecuteGuard(AgentMiddleware):
             if report.stop is not None:
                 reason = f"not run: the agent has stopped, because {report.stop.value}"
                 report.verdicts[call["id"]] = "refused; nothing was sent to the gateway"
+                return ToolMessage(
+                    reason, tool_call_id=call["id"], name=call["name"], status="error"
+                )
+            if not first_execute_of_its_reply(request.state["messages"], call["id"]):
+                # The model wrote this before it saw the first call's result.
+                reason = (
+                    "not run: only the first `execute` of a reply runs; "
+                    "call it again after reading that result"
+                )
+                report.verdicts[call["id"]] = (
+                    "refused, not the reply's first `execute`; nothing was sent to the gateway"
+                )
                 return ToolMessage(
                     reason, tool_call_id=call["id"], name=call["name"], status="error"
                 )
@@ -270,6 +284,14 @@ class ExecuteGuard(AgentMiddleware):
                 verdict = f"{what}, its tool calls may have happened; the agent stops, no retry"
             report.verdicts[call["id"]] = verdict
             return message
+
+
+def first_execute_of_its_reply(messages: list[BaseMessage], call_id: str) -> bool:
+    for message in reversed(messages):
+        if isinstance(message, AIMessage) and any(c["id"] == call_id for c in message.tool_calls):
+            executes = [c["id"] for c in message.tool_calls if c["name"] == "execute"]
+            return executes[0] == call_id
+    return False
 
 
 def connection(url: str, token: str) -> dict:

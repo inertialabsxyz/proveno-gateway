@@ -170,7 +170,9 @@ and runs a check before every model call:
   stops, so a confused model cannot keep transacting. The model is also asked
   at most 12 times in all.
 
-`execute` calls run one at a time, even when one reply holds several. The
+Only the first `execute` call of a reply runs: any other in the same reply is
+answered `not run` without reaching the gateway, because the model wrote it
+before seeing the first one's result. The
 agent exits 0 only when the model ended the task itself after at least one
 successful run. The flags `--api`, `--model`,
 `--base-url` and `--api-key-var` match `conformance/` and default to the
@@ -201,6 +203,7 @@ fake chat model against a real gateway, Anvil and `demo-market` on free ports:
 - a failed run is not retried, whether the second `execute` comes in the next
   reply or in the same one, and a failed run after a successful one stops the
   agent too;
+- a second `execute` in the same reply is not sent, even after a successful run;
 - the successful-run cap stops a model that keeps transferring;
 - three lint errors in a row stop the agent, and a successful run resets the
   count;
