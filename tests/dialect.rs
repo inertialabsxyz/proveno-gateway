@@ -558,6 +558,28 @@ fn integer_division_only() {
     );
 }
 
+/// `math.scale_div`'s third argument is a multiplier, while `scale` in
+/// `decimal.*` counts digits. A live model passed the digit count, 4, and got
+/// a 2.03% move as 0; the rules must say which is which.
+#[test]
+fn scale_div_takes_a_multiplier_not_a_digit_count() {
+    let program = |multiplier: &str| {
+        format!(
+            "local now = decimal.parse(\"2550.75\", 4)\n\
+             local past = decimal.parse(\"2500.0\", 4)\n\
+             return math.scale_div(now - past, past, {multiplier})"
+        )
+    };
+    assert_eq!(run(&program("10000")), LuaValue::Integer(203));
+    assert_eq!(run(&program("4")), LuaValue::Integer(0));
+    let rules = dialect_rules();
+    assert!(
+        rules.contains("math.scale_div(now - past, past, 10000)"),
+        "{rules}"
+    );
+    assert!(rules.contains("not a number of digits"), "{rules}");
+}
+
 fn assert_contains(v: &LuaValue, needle: &str) {
     match v {
         LuaValue::String(s) => {
