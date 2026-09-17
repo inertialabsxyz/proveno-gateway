@@ -291,10 +291,13 @@ jq -r '
 echo
 echo "A tag is the tool server's own claim of where its answer came from, sealed into the signed trace; the gateway has not checked it."
 
-jq -s -e '[.[].entries[] | select(.record.tool_name | startswith("wallet."))]
+# A call the policy refused was never dispatched, so it has no provenance.
+jq -s -e '[.[].entries[] | select(.decision.type == "allowed")
+    | select(.record.tool_name | startswith("wallet."))]
     | length > 0 and all(.provenance.type == "onchain")' \
     "${trace_files[@]}" > /dev/null || fail "a wallet call is not tagged onchain"
-jq -s -e '[.[].entries[] | select(.record.tool_name | startswith("market."))]
+jq -s -e '[.[].entries[] | select(.decision.type == "allowed")
+    | select(.record.tool_name | startswith("market."))]
     | length > 0 and all(.provenance.type == "unsigned")' \
     "${trace_files[@]}" > /dev/null || fail "a market call is not tagged unsigned"
 
