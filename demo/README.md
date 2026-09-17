@@ -125,13 +125,19 @@ DEMO_AGENT_TOKEN=... uv run demo-agent "rebalance to 60/40 if the price has move
 It connects to `http://127.0.0.1:7777/mcp` (`--url`) with the bearer token from
 `DEMO_AGENT_TOKEN`, loads `execute` and `check`, and gives the model a short
 system prompt and the task. Everything about the dialect and the tool API comes
-from `execute`'s generated description. The task itself is recorded in the
-trace as the `request`, set by the agent rather than the model.
+from `execute`'s generated description.
+
+A task can take several `execute` calls (spec section 3.1): a model may read the
+price and balances in one run, then decide and transfer in the next. Every run
+of one agent invocation shares a `session` id, `demo-agent-<uuid>`, generated
+per invocation. The agent sets `session`, and the task as `request`, on every
+`execute`, overriding whatever the model passes, so the traces show all the
+task's runs together.
 
 It streams the conversation from the graph and prints every message as it
 happens, labelled by role:
 
-- `SYSTEM`: the system prompt, at most three lines, with its length;
+- `SYSTEM`: the system prompt, at most four lines, with its length;
 - `HUMAN`: the task;
 - `AI`: the model's text, and each tool call with its name, its arguments and
   its `program` as a Lua block;
@@ -139,35 +145,45 @@ happens, labelled by role:
   or failed-run text, followed by a `=>` line saying what the agent made of it.
 
 The output is wrapped for a terminal about 100 columns wide. It ends with the
-outcome and the `trace_id`. `--quiet` prints only those last lines.
+outcome, why the agent stopped, the session, and every run: its attempt number,
+its lint error or result, and its `trace_id`. `--quiet` prints only that
+summary. `--result-file` writes the same as JSON, which `run.sh` reads.
 
 What happens after `execute` is decided in the graph, from the raw MCP result,
 not left to the model. A middleware, `ExecuteGuard`, wraps every `execute` call
 and runs a check before every model call:
 
+- **A successful run** goes back to the model. It may run another program,
+  call `check`, or reply without calling a tool, which is the normal end.
 - **A lint error** is a tool error with the text `line N: message` and no
-  structured result. Nothing ran, so the error goes back to the model and it
-  tries again, up to three attempts.
+  structured result. Nothing ran, so the error goes back to the model to fix.
+  Three lint errors in a row, with no successful run between them, stop the
+  agent.
 - **A failed run** is a tool error that carries a structured result with a
   `trace_id`: the program started, and its text says its tool calls have
   already happened. The graph ends before the model is asked again, and
   any further `execute` call in the same reply is answered `not run` without
   reaching the gateway. A failed run is never retried, because a second run
-  could transfer twice.
-- **A successful run** ends the graph the same way; `--result-file` writes its
-  result for `run.sh`.
+  could transfer twice. Any other error is treated the same way.
+- **The successful-run cap** (`--max-runs`, default 5): once that many runs
+  have succeeded, the next `execute` is answered `not run` and the agent
+  stops, so a confused model cannot keep transacting. The model is also asked
+  at most 12 times in all.
 
-Any other error is treated like a failed run. The flags `--api`, `--model`,
+`execute` calls run one at a time, even when one reply holds several. The
+agent exits 0 only when the model ended the task itself after at least one
+successful run. The flags `--api`, `--model`,
 `--base-url` and `--api-key-var` match `conformance/` and default to the
 `DEMO_AGENT_*` variables above.
 
 **The model's program varies from run to run.** Two runs of the same model can
 write different programs, name the result's fields differently, or need a
-different number of lint round trips. That is why only step 1 uses the model.
-Step 2 replays step 1's recorded trace, which reproduces the run exactly
+different number of runs and lint round trips. That is why only step 1 uses the
+model. Step 2 replays step 1's recorded traces, which reproduce each run exactly
 whichever program it was, and step 3 runs `rebalance.lua` so the refusal it shows
-is the same on every run. `run.sh` reads the transfer from the trace rather
-than from the program's result, because the model chooses the result's shape.
+is the same on every run. `run.sh` looks for the transfer in all of the task's
+traces rather than in a program's result, because the model chooses how to split
+the task and the shape of each result.
 
 Its own lint and tests, not part of the gateway's `make check`:
 
@@ -178,11 +194,17 @@ Its own lint and tests, not part of the gateway's `make check`:
 The tests do not call a model. They drive the agent with a scripted LangChain
 fake chat model against a real gateway, Anvil and `demo-market` on free ports:
 
+- a task split into a read-only run and a transferring run: both run, the
+  transfer lands, the agent ends normally, and both traces carry the agent's
+  session, even when the model passes its own;
 - a lint error goes back to the model, and the corrected program transfers;
 - a failed run is not retried, whether the second `execute` comes in the next
-  reply or in the same one;
-- after three lint errors the agent stops;
-- `check` calls do not count as attempts;
+  reply or in the same one, and a failed run after a successful one stops the
+  agent too;
+- the successful-run cap stops a model that keeps transferring;
+- three lint errors in a row stop the agent, and a successful run resets the
+  count;
+- `check` calls do not count as runs;
 - the printed flow is in order and shows the tool text the model received;
 - `--quiet` prints only the outcome;
 - the negotiated MCP protocol is `2025-11-25`.
@@ -194,25 +216,27 @@ work this way, a run can be reproduced exactly from its record, and a policy
 change is enforced at the call with the refusal in the record.
 
 **Step 1: an agent can do real work.** The task is "rebalance to 60/40 if the
-price has moved more than 2%". With a key, the model writes the program, and
-the step shows the conversation as it happens: the task, the model's program,
-each lint round trip, the tool results and the `trace_id`. What that program
-does is the model's. Without a key, `rebalance.lua` runs: it reads the ETH/USD
-price and the two balances, works out that the price moved 203 basis points and
-that the hot wallet is 20 milli-ETH over its 60% target, and transfers 20
-milli-ETH to the vault. The step prints the generated `wallet.transfer` signature from the tool
-description the model was given, the program's result, the transaction as `cast
-tx` sees it, and the signed trace: header, every call with its policy decision
-and provenance tag, and a footer with the output, gas and memory. It then lists
-each call's decision and tag: the wallet's calls are
-`onchain(eip155:31337, block, reference)`, with the block hash for a balance read
-and the transaction hash for the transfer, and the price read is `unsigned`,
-because `demo-market` reports nothing. The tag is `demo-wallet`'s own claim,
-bound into the signed trace; the gateway does not check it against the chain.
+price has moved more than 2%". With a key, the model writes the programs, and
+the step shows the conversation as it happens: the task, each program the model
+writes, each lint round trip, the tool results and every run's `trace_id`. What
+those programs do is the model's, and it may split the task across several runs.
+Without a key, `rebalance.lua` runs: it reads the ETH/USD price and the two
+balances, works out that the price moved 203 basis points and that the hot
+wallet is 20 milli-ETH over its 60% target, and transfers 20 milli-ETH to the
+vault. The step prints the generated `wallet.transfer` signature from the tool
+description the model was given, each result, the transaction as `cast tx` sees
+it, and each signed trace: header, every call with its policy decision and
+provenance tag, and a footer with the output, gas and memory. It then lists each
+call's decision and tag: the wallet's calls are
+`onchain(eip155:31337, block, reference)`, with the block hash for a balance
+read and the transaction hash for the transfer, and the price read is
+`unsigned`, because `demo-market` reports nothing. The tag is `demo-wallet`'s
+own claim, bound into the signed trace; the gateway does not check it against
+the chain.
 
 **Step 2: a run can be reproduced exactly from its record.** The chain, the
 price server and the wallet server are stopped, and `proveno-gateway replay`
-runs the program again from the trace alone. It prints `replay matched`, the
+runs each of step 1's programs again from its trace alone. It prints `replay matched`, the
 same output, the same `gas_used` and the same `memory_used`, with no network
 access at all.
 

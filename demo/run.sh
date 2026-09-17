@@ -233,8 +233,9 @@ if [ -n "$AGENT_KEY" ]; then
     "$CLIENT" description | grep -B1 'wallet.transfer{'
 
     say "The agent's conversation, as it happens: the model reads the description, writes its own program and runs it"
-    run_agent "$LOG_DIR/agent-result.json" || fail "the agent did not complete a successful run"
-    result=$(cat "$LOG_DIR/agent-result.json")
+    run_agent "$LOG_DIR/agent-result.json" || fail "the agent did not complete its task"
+    # A task can take several runs, all in one session; every one has a trace.
+    trace_ids=$(jq -r '.trace_ids[]' "$LOG_DIR/agent-result.json")
 else
     say "Step 1 path: $AGENT_KEY_VAR is empty or unset, so no model runs; using the recorded program rebalance.lua"
 
@@ -247,24 +248,35 @@ else
     say "Executing it through the gateway"
     result=$("$CLIENT" execute rebalance.lua --request "$REQUEST")
     echo "$result"
+    trace_ids=$(printf '%s' "$result" | jq -r .trace_id)
 fi
 
-trace_id=$(printf '%s' "$result" | jq -r .trace_id)
-# The transfer is read from the trace, not from the program's return value,
-# whose shape a model chooses.
+trace_files=()
+for trace_id in $trace_ids; do
+    trace_files+=("$(trace_file "$trace_id")")
+done
+[ "${#trace_files[@]}" -gt 0 ] || fail "no run was recorded"
+
+say "The run's traces"
+printf '%s\n' $trace_ids
+
+# The transfer is read from the traces, not from a program's return value,
+# whose shape a model chooses, and it may be in any of the task's runs.
 tx_hashes=$(jq -r '.entries[]
     | select(.record.tool_name == "wallet.transfer" and .decision.type == "allowed")
     | .record.response_canonical | select(. != "") | fromjson | .tx_hash // empty' \
-    "$(trace_file "$trace_id")")
-[ -n "$tx_hashes" ] || fail "the program made no transfer"
+    "${trace_files[@]}")
+[ -n "$tx_hashes" ] || fail "no run made a transfer"
 
 say "The transaction on the chain"
 for tx_hash in $tx_hashes; do
     cast tx "$tx_hash" --rpc-url "$RPC"
 done
 
-say "The signed trace"
-jq . "$(trace_file "$trace_id")"
+for trace_id in $trace_ids; do
+    say "The signed trace $trace_id"
+    jq . "$(trace_file "$trace_id")"
+done
 
 say "Each call's policy decision and provenance tag"
 jq -r '
@@ -273,17 +285,18 @@ jq -r '
         elif .type == "signed" then "signed(\(.by), \(.sig))"
         elif .type == "notarized" then "notarized(\(.scheme), \(.reference))"
         else .type end;
-    .entries[] | "\(.record.seq)  \(.record.tool_name)  \(.decision.type)  \(.provenance | tag)"' \
-    "$(trace_file "$trace_id")"
+    "\(.header.trace_id)",
+    (.entries[] | "  \(.record.seq)  \(.record.tool_name)  \(.decision.type)  \(.provenance | tag)")' \
+    "${trace_files[@]}"
 echo
 echo "A tag is the tool server's own claim of where its answer came from, sealed into the signed trace; the gateway has not checked it."
 
-jq -e '[.entries[] | select(.record.tool_name | startswith("wallet."))]
+jq -s -e '[.[].entries[] | select(.record.tool_name | startswith("wallet."))]
     | length > 0 and all(.provenance.type == "onchain")' \
-    "$(trace_file "$trace_id")" > /dev/null || fail "a wallet call is not tagged onchain"
-jq -e '[.entries[] | select(.record.tool_name | startswith("market."))]
+    "${trace_files[@]}" > /dev/null || fail "a wallet call is not tagged onchain"
+jq -s -e '[.[].entries[] | select(.record.tool_name | startswith("market."))]
     | length > 0 and all(.provenance.type == "unsigned")' \
-    "$(trace_file "$trace_id")" > /dev/null || fail "a market call is not tagged unsigned"
+    "${trace_files[@]}" > /dev/null || fail "a market call is not tagged unsigned"
 
 # ── step 2 ────────────────────────────────────────────────────────────────────
 
@@ -293,8 +306,10 @@ stop_world
 say "anvil, demo-market and demo-wallet are stopped"
 pgrep -fl 'anvil|demo-' || echo "(no chain, no tool servers)"
 
-say "Replaying $trace_id with no network access"
-"$GATEWAY" replay --config gateway.toml "$trace_id"
+for trace_id in $trace_ids; do
+    say "Replaying $trace_id with no network access"
+    "$GATEWAY" replay --config gateway.toml "$trace_id"
+done
 
 # ── step 3 ────────────────────────────────────────────────────────────────────
 
