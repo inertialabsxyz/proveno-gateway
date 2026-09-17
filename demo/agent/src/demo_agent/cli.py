@@ -24,7 +24,7 @@ from pathlib import Path
 from langchain_core.language_models import BaseChatModel
 from pydantic import SecretStr
 
-from demo_agent.agent import MAX_ATTEMPTS, Outcome, run
+from demo_agent.agent import MAX_LINT_STREAK, MAX_RUNS, run
 
 API_DEFAULTS = {
     "anthropic": (None, "ANTHROPIC_API_KEY"),
@@ -70,9 +70,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         prog="demo-agent",
         description=(
             "Give a model a task and the proveno-gateway's MCP tools, in LangChain's prebuilt "
-            "agent graph. The model reads the `execute` description, writes a Lua program and "
-            f"runs it. A lint error goes back to the model, up to {MAX_ATTEMPTS} attempts; a "
-            "failed run is never retried. Prints every message as it happens."
+            "agent graph. The model reads the `execute` description and writes Lua programs, "
+            "possibly several, all run under one session. A successful run and a lint error go "
+            f"back to the model, up to {MAX_LINT_STREAK} lint errors in a row; a failed run is "
+            "never retried. Prints every message as it happens."
         ),
         epilog=(
             "Examples:\n"
@@ -112,14 +113,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-tokens", type=int, default=16000, help="per reply; default 16000")
     parser.add_argument("--url", default=DEFAULT_URL, help=f"gateway MCP endpoint; {DEFAULT_URL}")
     parser.add_argument(
+        "--max-runs",
+        type=int,
+        default=MAX_RUNS,
+        help=f"most successful `execute` runs before the agent stops; default {MAX_RUNS}",
+    )
+    parser.add_argument(
         "--quiet",
         action="store_true",
-        help="print only the outcome and trace_id, not the message flow",
+        help="print only the outcome and every run's trace_id, not the message flow",
     )
     parser.add_argument(
         "--result-file",
         type=Path,
-        help="write the successful run's structured result here, as JSON",
+        help="write the outcome, the session and every run (result, error, trace_id) here, as JSON",
     )
     return parser.parse_args(argv)
 
@@ -141,12 +148,25 @@ def main(argv: list[str] | None = None) -> int:
     logging.getLogger("mcp.client.streamable_http").setLevel(logging.ERROR)
     if not args.quiet:
         print(f"[model {args.model or DEFAULT_MODELS[args.api]} via the {args.api} API]")
-    report = asyncio.run(run(model, args.task, args.url, token, sys.stdout, quiet=args.quiet))
-    if report.outcome is not Outcome.OK:
-        print(f"demo-agent: {report.error or 'no successful run'}", file=sys.stderr)
-        return 1
+    if args.max_runs < 1:
+        print("error: --max-runs must be at least 1", file=sys.stderr)
+        return 2
+    report = asyncio.run(
+        run(
+            model,
+            args.task,
+            args.url,
+            token,
+            sys.stdout,
+            max_runs=args.max_runs,
+            quiet=args.quiet,
+        )
+    )
     if args.result_file:
-        args.result_file.write_text(json.dumps(report.response, indent=2) + "\n")
+        args.result_file.write_text(json.dumps(report.to_json(), indent=2) + "\n")
+    if not report.succeeded:
+        print(f"demo-agent: stopped because {report.stop.value}", file=sys.stderr)
+        return 1
     return 0
 
 

@@ -36,3 +36,8 @@ class ScriptedChatModel(FakeMessagesListChatModel):
             raise AssertionError(f"the script has only {len(self.responses)} replies")
         self.received.append(list(messages))
         return super()._generate(messages, *args, **kwargs)
+
+
+def reply(text: str) -> AIMessage:
+    """A reply calling no tool, which ends the agent."""
+    return AIMessage(content=text)
